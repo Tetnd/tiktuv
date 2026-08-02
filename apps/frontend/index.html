@@ -1,0 +1,19 @@
+<!doctype html>
+<!--
+  dir="rtl" and lang="he" on the root element are what make the entire
+  application right-to-left. Every layout decision below inherits from here;
+  no string is ever reversed in JavaScript.
+-->
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; connect-src 'self' http://127.0.0.1:8756 http://localhost:8756; media-src 'self' http://127.0.0.1:8756 http://localhost:8756 blob:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>תכתוב — תמלול עברית מקומי</title>
+  </head>
+  <body class="bg-ink-50 text-ink-900 antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

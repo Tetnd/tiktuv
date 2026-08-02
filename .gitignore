@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+apps/frontend/dist/
+apps/frontend/.env.local
+*.tsbuildinfo
+
+# Rust / Tauri
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/binaries/
+
+# Local data — never commit recordings, transcripts or models
+data/
+samples/*.mp3
+samples/*.mp4
+samples/*.wav
+samples/*.m4a
+!samples/README.md
+!samples/.gitkeep
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Local tooling
+.claude/

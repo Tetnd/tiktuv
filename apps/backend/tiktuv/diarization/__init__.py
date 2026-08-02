@@ -1,0 +1,125 @@
+"""Optional speaker diarization.
+
+**Status: interface only, no backend bundled.** Diarization is off by default
+and Tiktuv ships without a diarization model. This is a deliberate call:
+
+* ``pyannote/speaker-diarization-3.1`` is the reliable open-source option, but
+  it is a *gated* Hugging Face repo. Using it requires the user to create an
+  account, accept two separate model licences and paste an access token — an
+  account and a network round-trip, in an application whose entire promise is
+  that it works locally with no sign-in.
+* Bundling the weights ourselves is not permitted by that licence.
+
+So the feature lives behind the stable :class:`DiarizationBackend` interface
+below. Registering a working backend is the *only* change needed to turn it on
+— the job pipeline, the schema (``Segment.speaker``), the transcript store, the
+editor's rename UI, and every exporter already handle speakers end to end.
+
+To enable it locally, install ``pyannote.audio``, accept the model licences,
+and register a backend at startup::
+
+    from tiktuv.diarization import register_backend
+    register_backend(MyPyannoteBackend(token=...))
+
+See docs/architecture.md#diarization.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
+
+from ..logging_conf import get_logger
+from ..media.audio import AudioArray
+from ..schemas import Segment
+
+log = get_logger("diarization")
+
+
+@dataclass(frozen=True, slots=True)
+class SpeakerTurn:
+    """One contiguous span attributed to a single speaker."""
+
+    start: float
+    end: float
+    speaker: str
+
+
+@runtime_checkable
+class DiarizationBackend(Protocol):
+    """Anything that can attribute spans of audio to speakers."""
+
+    @property
+    def name(self) -> str: ...
+
+    def diarize(self, samples: AudioArray, sample_rate: int) -> list[SpeakerTurn]: ...
+
+
+_backend: DiarizationBackend | None = None
+
+
+def register_backend(backend: DiarizationBackend | None) -> None:
+    global _backend
+    _backend = backend
+    log.info(
+        "diarization backend registered" if backend else "diarization backend cleared",
+        extra={"backend": getattr(backend, "name", None)},
+    )
+
+
+def get_backend() -> DiarizationBackend | None:
+    return _backend
+
+
+def is_available() -> bool:
+    return _backend is not None
+
+
+#: Hebrew display names. ``speaker_0`` becomes "דובר 1"; the user can rename
+#: any of them in the editor, which overrides this map per transcript.
+def default_speaker_label(index: int) -> str:
+    return f"דובר {index + 1}"
+
+
+def assign_speakers(segments: list[Segment], turns: list[SpeakerTurn]) -> list[Segment]:
+    """Attach a speaker id to each segment by maximum temporal overlap.
+
+    Pure and backend-independent, so it is unit-testable without any model.
+    """
+    if not turns:
+        return segments
+
+    result: list[Segment] = []
+    for segment in segments:
+        best_speaker: str | None = None
+        best_overlap = 0.0
+        for turn in turns:
+            overlap = min(segment.end, turn.end) - max(segment.start, turn.start)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_speaker = turn.speaker
+        result.append(
+            segment.model_copy(update={"speaker": best_speaker}) if best_speaker else segment
+        )
+    return result
+
+
+def build_speaker_map(segments: list[Segment]) -> dict[str, str]:
+    """Map raw speaker ids to Hebrew labels, in order of first appearance."""
+    order: list[str] = []
+    for segment in segments:
+        if segment.speaker and segment.speaker not in order:
+            order.append(segment.speaker)
+    return {speaker: default_speaker_label(index) for index, speaker in enumerate(order)}
+
+
+__all__ = [
+    "DiarizationBackend",
+    "SpeakerTurn",
+    "assign_speakers",
+    "build_speaker_map",
+    "default_speaker_label",
+    "get_backend",
+    "is_available",
+    "register_backend",
+]

@@ -1,0 +1,72 @@
+# Docker is OPTIONAL and is NOT required to use Tiktuv.
+#
+# The desktop application runs the backend as a local process — see the README.
+# This file exists for two narrow cases:
+#
+#   1. Running the backend on a Linux box with a GPU and driving it from a
+#      browser on the same machine.
+#   2. Reproducing a bug in a clean environment.
+#
+# It is deliberately loopback-only. Publishing this port to a network would
+# expose an API that reads and writes local files, and the session token is the
+# only thing standing in the way.
+#
+#   docker compose up backend          # CPU
+#   docker compose --profile gpu up backend-gpu
+#
+# The token is printed in the backend's startup log; pass it to the frontend as
+# VITE_TIKTUV_TOKEN.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    # Loopback only. Do not change to "8756:8756" — that publishes the API to
+    # every host that can reach this machine.
+    ports:
+      - "127.0.0.1:8756:8756"
+    environment:
+      TIKTUV_HOST: "127.0.0.1"
+      TIKTUV_PORT: "8756"
+      TIKTUV_DATA_DIR: "/data"
+      TIKTUV_LOG_JSON: "1"
+    volumes:
+      - tiktuv-data:/data
+      # Mount the recordings you want to transcribe, read-only.
+      - ./samples:/media:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8756/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: "no"
+
+  backend-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+      args:
+        TORCH_INDEX: "https://download.pytorch.org/whl/cu121"
+    ports:
+      - "127.0.0.1:8756:8756"
+    environment:
+      TIKTUV_HOST: "127.0.0.1"
+      TIKTUV_PORT: "8756"
+      TIKTUV_DATA_DIR: "/data"
+    volumes:
+      - tiktuv-data:/data
+      - ./samples:/media:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  # Named volume so downloaded models survive a container rebuild.
+  tiktuv-data:

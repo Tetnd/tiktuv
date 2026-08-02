@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    /* Direction comes from <html dir="rtl">. Never set it per-string. */
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Hebrew reads better with slightly more line height than Latin. */
+  p,
+  li,
+  textarea {
+    line-height: 1.75;
+  }
+
+  :focus-visible {
+    outline: 2px solid theme('colors.brand.500');
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* A run of Latin text or digits inside Hebrew. `unicode-bidi: isolate`
+     is the CSS equivalent of wrapping it in LRM marks: it keeps the run
+     intact without touching the underlying characters. */
+  .ltr-run {
+    direction: ltr;
+    unicode-bidi: isolate;
+    display: inline-block;
+  }
+
+  /* Numeric readouts (timestamps, sizes) that must not be re-ordered. */
+  .numeric {
+    direction: ltr;
+    unicode-bidi: isolate;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .card {
+    @apply rounded-xl border border-ink-200 bg-white shadow-sm;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm
+           font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply btn bg-brand-600 text-white hover:bg-brand-700;
+  }
+
+  .btn-secondary {
+    @apply btn border border-ink-300 bg-white text-ink-700 hover:bg-ink-50;
+  }
+
+  .btn-ghost {
+    @apply btn text-ink-600 hover:bg-ink-100;
+  }
+
+  .btn-danger {
+    @apply btn border border-red-200 bg-white text-red-700 hover:bg-red-50;
+  }
+
+  .field-label {
+    @apply mb-1 block text-sm font-medium text-ink-700;
+  }
+
+  .field-input {
+    @apply w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm
+           text-ink-900 outline-none focus:border-brand-500;
+  }
+
+  .field-hint {
+    @apply mt-1 text-xs text-ink-500;
+  }
+}
