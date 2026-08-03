@@ -19,6 +19,7 @@ from .api import (
     routes_media,
     routes_system,
     routes_transcript,
+    static_files,
 )
 from .app_state import build_state, start_state, stop_state
 from .config import Settings, get_settings
@@ -169,6 +170,11 @@ def create_app(settings: Settings | None = None, bus: EventBus | None = None) ->
         routes_events,
     ):
         app.include_router(module.router)
+
+    # Serve the built UI when there is one, so Tiktuv can run as a standalone
+    # local app with no desktop shell. Mounted last: the API routes above must
+    # win over the static catch-all.
+    static_files.mount_frontend(app, settings)
 
     return app
 

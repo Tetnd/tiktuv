@@ -22,6 +22,7 @@ from . import __version__
 from .config import DEFAULT_PORT, Settings, get_settings
 from .logging_conf import configure_logging, get_logger
 from .main import create_app
+from .single_instance import acquire, release
 
 log = get_logger("cli")
 
@@ -93,6 +94,15 @@ def main(argv: list[str] | None = None) -> int:
         print(settings.auth_token)
         return 0
 
+    # Refuse to start a second backend on this data directory: it would
+    # overwrite the live instance's handshake token and break its UI.
+    try:
+        acquire(settings)
+    except RuntimeError as exc:
+        log.error("another instance is already running", extra={"detail": str(exc)})
+        print(f"TIKTUV_ALREADY_RUNNING {exc}", flush=True)
+        return 3
+
     handshake = write_handshake(settings, settings.port)
     # A single line on stdout the desktop shell waits for. Everything else
     # goes to stderr, so this stays parseable.
@@ -125,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     finally:
         clear_handshake(settings)
+        release(settings)
     return 0
 
 

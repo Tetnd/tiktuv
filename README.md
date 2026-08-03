@@ -6,6 +6,9 @@ Tiktuv transcribes Hebrew audio and video entirely on your own machine using the
 Hebrew-focused ASR model [`ivrit-ai/whisper-large-v3`](https://huggingface.co/ivrit-ai/whisper-large-v3).
 Nothing is uploaded. No analytics. No accounts.
 
+The model downloads itself on first use — the only step that touches the network,
+and it always shows its size and destination first.
+
 - 🇮🇱 Hebrew-first UI and Hebrew-first ASR, with correct RTL rendering everywhere
 - 🎬 MP3, MP4, WAV, M4A, MOV, MKV, WEBM — audio extracted with FFmpeg
 - ⚡ CUDA GPU / CPU, automatic device detection, FP16, configurable batch size
@@ -37,7 +40,7 @@ Nothing is uploaded. No analytics. No accounts.
 | Node.js | 20+ | Frontend build only |
 | FFmpeg | 6.0+ | `ffmpeg` + `ffprobe` on `PATH`, or set `TIKTUV_FFMPEG_PATH` |
 | Rust | stable | Only to build the Tauri desktop shell |
-| Disk | ~7 GB free | `ivrit-ai/whisper-large-v3` weights are ≈3.1 GB |
+| Disk | ~15 GB free | `ivrit-ai/whisper-large-v3` is ≈6.2 GB to download and on disk — it ships FP32 weights in two shards, twice the size of OpenAI's FP16 upload |
 | RAM | 8 GB (CPU) | 16 GB recommended |
 | VRAM | 6 GB (FP16 GPU) | CPU inference works without a GPU, just slower |
 
@@ -48,20 +51,38 @@ Nothing is uploaded. No analytics. No accounts.
 
 ## Quick start
 
+### Installing it (including on someone else's machine)
+
+Double-click **`Install Tiktuv.cmd`**, or from PowerShell:
+
 ```bash
-git clone https://github.com/your-org/tiktuv.git
-cd tiktuv
+.\install.ps1
+```
+
+From a clean Windows 10/11 machine that installs Python, Node and FFmpeg if
+they are missing, sets up an isolated environment, picks the right PyTorch
+build for the hardware, builds the interface, and puts a **Tiktuv** icon on the
+Desktop. Re-running it is safe — finished steps are skipped.
+
+### Giving it to someone
+
+```bash
+scripts\package-source.ps1 -IncludeBuiltUI
+```
+
+Produces `Tiktuv-<version>.zip` (about 0.5 MB) on your Desktop. It deliberately
+excludes `.venv`, `node_modules`, the model cache and any recordings — those
+are either machine-specific or private. The recipient unzips it, double-clicks
+`Install Tiktuv.cmd`, and gets the same result.
+
+### Developing on it
+
+```bash
+scripts\setup.ps1
 ```
 
 ```bash
-scripts/setup.ps1
-```
-
-That script creates the Python virtualenv, installs backend + frontend
-dependencies, and runs the environment doctor. Then:
-
-```bash
-scripts/dev.ps1
+scripts\dev.ps1
 ```
 
 Backend on `http://127.0.0.1:8756`, frontend on `http://127.0.0.1:5173`.
@@ -129,6 +150,26 @@ npm --prefix apps/frontend run dev
 ```
 
 ### 5. Run the desktop application
+
+**Install it as a desktop app** — creates a "Tiktuv" icon you can
+double-click. No Rust toolchain needed:
+
+```bash
+scripts\install-desktop.ps1 -StartMenu
+```
+
+This builds the UI, generates the icon, and adds Desktop and Start Menu
+shortcuts. Launching runs the backend in the background and opens the UI in a
+dedicated application window (Edge or Chrome in `--app` mode: no address bar,
+no tabs, its own taskbar entry). Closing the window shuts the backend down.
+
+To remove the shortcuts (your transcripts and models are untouched):
+
+```bash
+scripts\install-desktop.ps1 -Uninstall
+```
+
+**Or run the Tauri shell** during development, which needs Rust:
 
 ```bash
 npm --prefix apps/desktop install
@@ -243,8 +284,8 @@ Be precise about what has and has not been exercised.
 
 **Verified by running it:**
 
-- 336 backend tests + 5 skipped (`pytest`), 65 frontend tests (`vitest`)
-- `ruff` clean, `mypy --strict` clean across 45 backend modules
+- 377 backend tests + 5 skipped (`pytest`), 65 frontend tests (`vitest`)
+- `ruff` clean, `mypy --strict` clean across 47 backend modules
 - Frontend type-check, lint and production build clean
 - End-to-end smoke test: 31 checks against a real backend process — Hebrew
   filenames, transcription, editing, all six export formats written and opened,
@@ -255,18 +296,24 @@ Be precise about what has and has not been exercised.
 - Chunk-boundary de-duplication, timestamp reconstruction, cancellation mid-job,
   partial-result flushing, and resume-after-crash
 
+- **Real `ivrit-ai/whisper-large-v3` inference**, end to end through the running
+  app: the model loads via `AutoModelForSpeechSeq2Seq` + `AutoProcessor`,
+  transcribes an MP3 and an MP4, returns Hebrew, and is loaded once and reused
+  across jobs (`scripts\smoke-test.ps1 -Real` — 31/31)
+- **The desktop app**: shortcut launches the backend, opens a dedicated window,
+  serves the UI with an injected session token, and shuts down on close
+
 **Not verified here, and you should not assume it works until you check:**
 
-- **Real `ivrit-ai/whisper-large-v3` inference.** All automated tests use a
-  deterministic mock backend. The real path is written against the API the model
-  card documents (`AutoModelForSpeechSeq2Seq` + `AutoProcessor` through the
-  Transformers ASR pipeline) and was confirmed against that documentation — but
-  it has not been executed. PyTorch is not installed in this checkout, and this
-  machine has no GPU. Run `scripts\smoke-test.ps1 -Real` and the opt-in
-  integration test before trusting transcription quality.
-- **CUDA and FP16 execution.** No GPU available here.
-- **The Tauri Windows installer.** No Rust toolchain here, so
-  `scriptsuild-windows.ps1` has not been run end to end.
+- **CUDA and FP16 execution.** This machine has no GPU, so the CUDA branch of
+  device selection and FP16 inference have not been executed. CPU inference is
+  verified.
+- **Transcription accuracy on real Hebrew speech.** The end-to-end runs use
+  synthetic audio, which proves the pipeline but says nothing about word error
+  rate. Transcribe a real recording and read the output.
+- **The Tauri MSI/NSIS installer.** No Rust toolchain here, so
+  `scriptsuild-windows.ps1` has not been run end to end. The desktop-shortcut
+  route (`scripts\install-desktop.ps1`) is what was verified.
 
 [docs/release-checklist.md](docs/release-checklist.md) is the list to work
 through before shipping.

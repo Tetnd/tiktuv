@@ -5,19 +5,19 @@ from __future__ import annotations
 import platform
 import sys
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict
 
-from .. import __version__
+from .. import __version__, dialogs
 from ..asr import registry
 from ..asr.device import cuda_version, list_devices, torch_version
-from ..errors import ErrorCode, FFmpegMissingError, ModelError
-from ..events import Event, EventType
+from ..errors import ErrorCode, FFmpegMissingError
 from ..jobs.store import directory_size, free_disk_bytes, purge_temp
 from ..logging_conf import get_logger
 from ..schemas import (
     CheckStatus,
     DeviceInfo,
+    ModelDownloadStatus,
     ModelInfo,
     PreflightCheck,
     StorageUsage,
@@ -29,8 +29,10 @@ log = get_logger("api.system")
 
 router = APIRouter(prefix="/api", tags=["system"])
 
-#: Enough for the largest model plus scratch space.
-_RECOMMENDED_FREE_BYTES = 8 * 1024 * 1024 * 1024
+#: The Hebrew model alone is ~6.2 GB; leave room for it plus media and
+#: scratch files. The Hugging Face cache can also hold a second copy when
+#: the filesystem does not support links.
+_RECOMMENDED_FREE_BYTES = 15 * 1024 * 1024 * 1024
 
 
 class HealthResponse(BaseModel):
@@ -205,7 +207,7 @@ def _run_checks(state: object) -> list[PreflightCheck]:
             detail=f"{free / (1 << 30):.1f} GiB פנויים",
             remedy=""
             if disk_status is CheckStatus.OK
-            else "מומלץ להשאיר לפחות 8 GiB פנויים עבור המודל וקבצי הביניים.",
+            else "מומלץ להשאיר לפחות 15 GiB פנויים עבור המודל וקבצי הביניים.",
         )
     )
 
@@ -269,40 +271,36 @@ def list_models(state: StateDep, _auth: AuthDep) -> list[ModelInfo]:
     return registry.list_models(state.settings)
 
 
-@router.post("/models/download", response_model=ModelInfo)
+@router.post("/models/download", response_model=ModelDownloadStatus)
 def download_model(
-    payload: DownloadRequest,
-    background: BackgroundTasks,
-    state: StateDep,
-    _auth: AuthDep,
-) -> ModelInfo:
-    """Start downloading a model.
+    payload: DownloadRequest, state: StateDep, _auth: AuthDep
+) -> ModelDownloadStatus:
+    """Start downloading a model in the background.
 
-    Called only after the UI has shown the user the approximate size and the
-    destination folder — this is the one place Tiktuv touches the network, and
-    it never happens without an explicit click.
+    This is the one place Tiktuv touches the network. The UI shows the size and
+    the destination folder before calling it, and reports progress from
+    ``GET /api/models/download`` and the ``model.status`` event stream.
+
+    Calling it again while the same model is downloading is a no-op, so a
+    first-run auto-start and a manual click cannot race into two downloads.
     """
-    entry = registry.get_entry(payload.model_id)
+    return state.downloader.start(payload.model_id)
 
-    def _download() -> None:
-        try:
-            registry.download_model(entry.id, state.settings)
-            state.bus.publish_threadsafe(
-                Event(EventType.MODEL_STATUS, {"model_id": entry.id, "status": "ready"})
-            )
-        except ModelError as exc:
-            state.bus.publish_threadsafe(
-                Event(
-                    EventType.MODEL_STATUS,
-                    {"model_id": entry.id, "status": "failed", "error": exc.to_payload()},
-                )
-            )
 
-    background.add_task(_download)
-    state.bus.publish_threadsafe(
-        Event(EventType.MODEL_STATUS, {"model_id": entry.id, "status": "downloading"})
-    )
-    return next(m for m in registry.list_models(state.settings) if m.id == entry.id)
+@router.get("/models/download", response_model=ModelDownloadStatus)
+def download_status(state: StateDep, _auth: AuthDep) -> ModelDownloadStatus:
+    """Current download progress. Safe to poll."""
+    return state.downloader.status()
+
+
+@router.delete("/models/download", response_model=ModelDownloadStatus)
+def cancel_download(state: StateDep, _auth: AuthDep) -> ModelDownloadStatus:
+    """Stop the running download after the file in flight finishes.
+
+    Partly-fetched files stay in the cache and are resumed on the next attempt.
+    """
+    state.downloader.cancel()
+    return state.downloader.status()
 
 
 @router.delete("/models/{model_id:path}", response_model=CleanupResult)
@@ -311,6 +309,47 @@ def delete_model(model_id: str, state: StateDep, _auth: AuthDep) -> CleanupResul
         state.models.release()
     reclaimed = registry.delete_model(model_id, state.settings)
     return CleanupResult(reclaimed_bytes=reclaimed, detail=f"deleted {model_id}")
+
+
+class PickFolderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Where the dialog should start. Ignored if it no longer exists.
+    initial: str | None = None
+
+
+class PickFolderResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: True when this session can show a native dialog at all.
+    available: bool
+    #: The chosen directory, or null if the user cancelled.
+    path: str | None = None
+
+
+@router.get("/system/pick-folder", response_model=PickFolderResponse)
+def can_pick_folder(_auth: AuthDep) -> PickFolderResponse:
+    """Whether a native folder dialog can be shown in this session.
+
+    The UI uses this to decide whether to offer a browse button, so that the
+    browser-fallback session shows a plain path field instead of a button that
+    would do nothing.
+    """
+    return PickFolderResponse(available=dialogs.is_available())
+
+
+@router.post("/system/pick-folder", response_model=PickFolderResponse)
+def pick_folder(
+    payload: PickFolderRequest, _auth: AuthDep
+) -> PickFolderResponse:
+    """Open a native folder chooser and return what the user picked.
+
+    Blocks until the dialog closes. Cancelling is not an error — it returns a
+    null path, and the caller leaves the current value alone.
+    """
+    if not dialogs.is_available():
+        return PickFolderResponse(available=False)
+    return PickFolderResponse(available=True, path=dialogs.pick_folder(payload.initial))
 
 
 @router.post("/system/cleanup/temp", response_model=CleanupResult)

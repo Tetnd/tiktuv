@@ -8,6 +8,7 @@ function so it can be unit-tested directly, without a queue or an event loop.
 from __future__ import annotations
 
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,10 +16,11 @@ from pathlib import Path
 
 from ..asr.base import TranscribeRequest
 from ..asr.chunking import TranscriptAccumulator, shift_segments
-from ..asr.registry import ModelManager
+from ..asr.downloader import ModelDownloader
+from ..asr.registry import ModelManager, is_downloaded, use_mock_backend
 from ..config import Settings
 from ..diarization import assign_speakers, build_speaker_map, get_backend
-from ..errors import ErrorCode, JobCancelled, ResourceError, TiktuvError
+from ..errors import ErrorCode, JobCancelled, ModelError, ResourceError, TiktuvError
 from ..exports import export_transcript
 from ..logging_conf import get_logger
 from ..media.audio import AudioArray, CancelToken, estimate_window_count, iter_windows
@@ -39,7 +41,10 @@ log = get_logger("jobs.pipeline")
 
 #: Fraction of the overall progress bar each stage owns.
 STAGE_WEIGHTS: dict[JobStage, tuple[float, float]] = {
-    JobStage.PREPARING_MEDIA: (0.00, 0.03),
+    JobStage.PREPARING_MEDIA: (0.00, 0.02),
+    # A missing model is fetched here. When it is already present this stage
+    # is instantaneous, so it costs the progress bar almost nothing.
+    JobStage.DOWNLOADING_MODEL: (0.02, 0.03),
     JobStage.LOADING_MODEL: (0.03, 0.10),
     JobStage.TRANSCRIBING: (0.10, 0.88),
     JobStage.DIARIZING: (0.88, 0.92),
@@ -74,11 +79,13 @@ class TranscriptionPipeline:
         transcripts: TranscriptStore,
         *,
         tools: FFmpegTools | None = None,
+        downloader: ModelDownloader | None = None,
     ) -> None:
         self._settings = settings
         self._models = model_manager
         self._transcripts = transcripts
         self._tools = tools
+        self._downloader = downloader
 
     def _ensure_tools(self) -> FFmpegTools:
         if self._tools is None:
@@ -109,13 +116,16 @@ class TranscriptionPipeline:
             JobStage.PREPARING_MEDIA, stage_progress(JobStage.PREPARING_MEDIA, 1.0), 0.0, None
         )
 
-        # -- 2. load model ---------------------------------------------
+        # -- 2. fetch the model if it is missing -------------------------
+        self._ensure_model(settings, cancel=cancel, on_progress=on_progress)
+
+        # -- 3. load model -----------------------------------------------
         on_progress(JobStage.LOADING_MODEL, stage_progress(JobStage.LOADING_MODEL, 0.1), 0.0, None)
         transcriber = self._models.acquire(settings)
         cancel.raise_if_cancelled()
         on_progress(JobStage.LOADING_MODEL, stage_progress(JobStage.LOADING_MODEL, 1.0), 0.0, None)
 
-        # -- 3. transcribe ----------------------------------------------
+        # -- 4. transcribe ----------------------------------------------
         duration = job.duration
         accumulator = TranscriptAccumulator(overlap_seconds=self._settings.window_overlap_seconds)
 
@@ -202,14 +212,14 @@ class TranscriptionPipeline:
         cancel.raise_if_cancelled()
         segments = accumulator.segments()
 
-        # -- 4. text post-processing -------------------------------------
+        # -- 5. text post-processing -------------------------------------
         segments = post_process_segments(
             segments,
             preserve_fillers=settings.preserve_filler_words,
             normalize=settings.normalize_punctuation,
         )
 
-        # -- 5. optional diarization -------------------------------------
+        # -- 6. optional diarization -------------------------------------
         speakers: dict[str, str] = {}
         if settings.enable_diarization:
             segments, speakers = self._diarize(
@@ -228,13 +238,71 @@ class TranscriptionPipeline:
         )
         self._transcripts.save(transcript)
 
-        # -- 6. exports ---------------------------------------------------
+        # -- 7. exports ---------------------------------------------------
         exports = self._export(job, transcript, settings, on_progress=on_progress)
 
         on_progress(JobStage.DONE, 1.0, duration, None)
         return PipelineResult(transcript=transcript, exports=exports)
 
     # ------------------------------------------------------------- stages
+    def _ensure_model(
+        self,
+        settings: TranscriptionSettings,
+        *,
+        cancel: CancelToken,
+        on_progress: ProgressCallback,
+    ) -> None:
+        """Download the model on demand so a first run just works.
+
+        Without this, a fresh install fails the first job with
+        MODEL_NOT_DOWNLOADED and sends the user hunting through settings. The
+        download is still announced — the UI shows size and destination, and
+        reports progress through this stage — it just does not need a click.
+        """
+        if use_mock_backend():
+            # The deterministic test backend has no weights to fetch. Without
+            # this the whole test suite would try to reach the network.
+            return
+        if is_downloaded(settings.model_id, self._settings.model_cache_dir):
+            return
+        if not settings.auto_download_model or self._downloader is None:
+            raise ModelError(
+                f"model {settings.model_id!r} has not been downloaded yet",
+                code=ErrorCode.MODEL_NOT_DOWNLOADED,
+                context={"model_id": settings.model_id},
+            )
+
+        log.info("fetching a missing model before transcription",
+                 extra={"model_id": settings.model_id})
+        self._downloader.start(settings.model_id)
+
+        while self._downloader.is_running:
+            if cancel.cancelled:
+                self._downloader.cancel()
+                raise JobCancelled("cancelled while downloading the model")
+            status = self._downloader.status()
+            on_progress(
+                JobStage.DOWNLOADING_MODEL,
+                stage_progress(JobStage.DOWNLOADING_MODEL, status.percent),
+                0.0,
+                f"מוריד את המודל — {int(status.percent * 100)}%",
+            )
+            time.sleep(0.5)
+
+        status = self._downloader.status()
+        if not is_downloaded(settings.model_id, self._settings.model_cache_dir):
+            raise ModelError(
+                status.error or "the model download did not complete",
+                code=ErrorCode.MODEL_DOWNLOAD_FAILED,
+                context={"model_id": settings.model_id},
+            )
+        on_progress(
+            JobStage.DOWNLOADING_MODEL,
+            stage_progress(JobStage.DOWNLOADING_MODEL, 1.0),
+            0.0,
+            None,
+        )
+
     def _check_disk(self, media_path: Path) -> None:
         free = free_disk_bytes(self._settings.data_dir)
         required = self._settings.min_free_disk_bytes

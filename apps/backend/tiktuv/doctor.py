@@ -135,13 +135,13 @@ def run() -> int:
 
     # -- Disk -------------------------------------------------------------
     free = free_disk_bytes(settings.data_dir)
-    enough = free >= 8 * (1 << 30)
+    enough = free >= 15 * (1 << 30)
     lines.append(
         _line(
             OK if enough else WARN,
             "Free disk space",
             f"{free / (1 << 30):.1f} GiB at {settings.data_dir}",
-            "" if enough else "At least 8 GiB is recommended.",
+            "" if enough else "At least 15 GiB is recommended (the model alone is ~6.2 GB).",
         )
     )
 

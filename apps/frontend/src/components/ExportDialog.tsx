@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ExportFormat } from '@shared/index';
 import { EXPORT_FORMATS } from '@shared/index';
 import { FORMAT_LABELS } from '@/lib/format';
+import { FolderField } from '@/components/ui/FolderField';
 import { useStore } from '@/state/store';
 
 const DEFAULT_SELECTION: ExportFormat[] = ['txt', 'docx', 'pdf', 'srt'];
@@ -75,15 +76,12 @@ export function ExportDialog({ jobId, onClose }: { jobId: string; onClose: () =>
         </fieldset>
 
         <div className="mt-4">
-          <label className="field-label" htmlFor="export-dir">
-            תיקיית יעד
-          </label>
-          <input
+          <FolderField
             id="export-dir"
-            className="field-input ltr-run"
-            placeholder="ברירת מחדל: תיקיית הייצוא של היישום"
+            label="תיקיית יעד"
             value={outputDir}
-            onChange={(event) => setOutputDir(event.target.value)}
+            onChange={setOutputDir}
+            placeholder="ברירת מחדל: תיקיית הייצוא של היישום"
           />
         </div>
 

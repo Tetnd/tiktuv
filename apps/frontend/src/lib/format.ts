@@ -16,6 +16,7 @@ export const RLM = '‏';
 export const STAGE_LABELS: Record<JobStage, string> = {
   pending: 'ממתין בתור',
   preparing_media: 'מכין את המדיה',
+  downloading_model: 'מוריד את המודל',
   loading_model: 'טוען מודל',
   transcribing: 'מתמלל',
   diarizing: 'מזהה דוברים',

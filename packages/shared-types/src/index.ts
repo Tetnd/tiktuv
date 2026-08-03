@@ -12,6 +12,7 @@ export type JobStatus = (typeof JOB_STATUSES)[number];
 export const JOB_STAGES = [
   'pending',
   'preparing_media',
+  'downloading_model',
   'loading_model',
   'transcribing',
   'diarizing',
@@ -47,6 +48,28 @@ export type ExportFormat = (typeof EXPORT_FORMATS)[number];
 export const CHECK_STATUSES = ['ok', 'warning', 'error'] as const;
 export type CheckStatus = (typeof CHECK_STATUSES)[number];
 
+export const MODEL_DOWNLOAD_STATES = [
+  'idle',
+  'downloading',
+  'ready',
+  'failed',
+  'cancelled',
+] as const;
+export type ModelDownloadState = (typeof MODEL_DOWNLOAD_STATES)[number];
+
+export interface ModelDownloadStatus {
+  state: ModelDownloadState;
+  model_id: string | null;
+  percent: number;
+  downloaded_bytes: number;
+  total_bytes: number;
+  files_done: number;
+  files_total: number;
+  current_file: string;
+  eta_seconds: number | null;
+  error: string | null;
+}
+
 export interface TranscriptionSettings {
   language: Language;
   model_id: string;
@@ -64,6 +87,7 @@ export interface TranscriptionSettings {
   detect_long_silences: boolean;
   long_silence_seconds: number;
   vocabulary_prompt: string;
+  auto_download_model: boolean;
   enable_diarization: boolean;
   output_dir: string | null;
   export_formats: ExportFormat[];
@@ -266,6 +290,7 @@ export const DEFAULT_SETTINGS: TranscriptionSettings = {
   detect_long_silences: true,
   long_silence_seconds: 2.5,
   vocabulary_prompt: '',
+  auto_download_model: true,
   enable_diarization: false,
   output_dir: null,
   export_formats: [],

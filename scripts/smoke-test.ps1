@@ -28,7 +28,15 @@ $dataDir = Join-Path ([System.IO.Path]::GetTempPath()) "tiktuv-smoke-$(Get-Rando
 $env:TIKTUV_DATA_DIR = $dataDir
 $env:TIKTUV_PORT = "$Port"
 $env:TIKTUV_LOG_JSON = '0'
-if (-not $Real) { $env:TIKTUV_ASR_BACKEND = 'mock' }
+if ($Real) {
+    # The temp data directory has no model cache of its own. Point at the real
+    # one so -Real exercises the downloaded model instead of re-downloading it.
+    $env:TIKTUV_ASR_BACKEND = ''
+    $env:TIKTUV_MODELS_DIR = Join-Path $env:LOCALAPPDATA 'Tiktuv\models'
+    Write-Host "Using the REAL Hebrew model from $env:TIKTUV_MODELS_DIR" -ForegroundColor Yellow
+} else {
+    $env:TIKTUV_ASR_BACKEND = 'mock'
+}
 
 # PowerShell 5.1's Invoke-RestMethod encodes a string body using the default
 # code page, which turns every Hebrew character into "?". Sending explicit

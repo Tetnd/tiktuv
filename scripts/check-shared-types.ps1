@@ -32,6 +32,7 @@ $pairs = @{
     'TimestampMode'     = 'TIMESTAMP_MODES'
     'ExportFormat'      = 'EXPORT_FORMATS'
     'CheckStatus'       = 'CHECK_STATUSES'
+    'ModelDownloadState' = 'MODEL_DOWNLOAD_STATES'
 }
 
 $failed = $false

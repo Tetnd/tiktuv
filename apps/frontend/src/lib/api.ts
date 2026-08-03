@@ -12,6 +12,7 @@ import type {
   ImportedMedia,
   JobDetail,
   JobSummary,
+  ModelDownloadStatus,
   ModelInfo,
   StorageUsage,
   SystemInfo,
@@ -100,9 +101,37 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     );
   }
 
+  if (response.status === 401) handleStaleToken();
   if (!response.ok) throw await ApiError.fromResponse(response);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+/**
+ * Recover from a rotated session token.
+ *
+ * The backend mints a new token every start. When Tiktuv runs in an app window
+ * with a persistent browser profile, that window can restore the previous
+ * session's document — which still holds the *old* token — and then every
+ * request comes back 401 with nothing on screen to explain it.
+ *
+ * The page carries its token in the HTML the backend serves, so reloading is
+ * what fetches a fresh one. Guarded so a genuinely rejected token cannot put
+ * the window into a reload loop.
+ */
+const RELOAD_GUARD_KEY = 'tiktuv:token-reloaded-at';
+const RELOAD_GUARD_MS = 10_000;
+
+function handleStaleToken(): void {
+  if (typeof window === 'undefined' || typeof sessionStorage === 'undefined') return;
+  try {
+    const last = Number(sessionStorage.getItem(RELOAD_GUARD_KEY) ?? 0);
+    if (Date.now() - last < RELOAD_GUARD_MS) return; // already tried; do not loop
+    sessionStorage.setItem(RELOAD_GUARD_KEY, String(Date.now()));
+  } catch {
+    return; // storage unavailable: better to do nothing than loop
+  }
+  window.location.reload();
 }
 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) });
@@ -117,13 +146,26 @@ export const api = {
   cleanupTemp: () =>
     request<{ reclaimed_bytes: number }>('/api/system/cleanup/temp', { method: 'POST' }),
 
+  /** Whether this session can show a native folder dialog. */
+  canPickFolder: () =>
+    request<{ available: boolean; path: string | null }>('/api/system/pick-folder'),
+  /** Opens the dialog and resolves with the chosen path, or null if cancelled. */
+  pickFolder: (initial: string | null) =>
+    request<{ available: boolean; path: string | null }>('/api/system/pick-folder', {
+      method: 'POST',
+      ...json({ initial }),
+    }),
+
   // -- models ------------------------------------------------------------
   models: () => request<ModelInfo[]>('/api/models'),
   downloadModel: (modelId: string) =>
-    request<ModelInfo>('/api/models/download', {
+    request<ModelDownloadStatus>('/api/models/download', {
       method: 'POST',
       ...json({ model_id: modelId }),
     }),
+  downloadStatus: () => request<ModelDownloadStatus>('/api/models/download'),
+  cancelDownload: () =>
+    request<ModelDownloadStatus>('/api/models/download', { method: 'DELETE' }),
   deleteModel: (modelId: string) =>
     request<{ reclaimed_bytes: number }>(`/api/models/${modelId}`, { method: 'DELETE' }),
 

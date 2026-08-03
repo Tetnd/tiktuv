@@ -75,12 +75,13 @@ if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
 
 # -- PyTorch ---------------------------------------------------------------
 Write-Step "Installing PyTorch ($Device)"
-$torchIndex = if ($Device -eq 'cuda') {
-    'https://download.pytorch.org/whl/cu121'
+# CUDA 12.8 covers Turing through Blackwell (RTX 50-series). Older CUDA
+# lines do not build for Blackwell, and fail at run time rather than install.
+if ($Device -eq 'cuda') {
+    & $venvPython -m pip install 'torch==2.8.0' --index-url 'https://download.pytorch.org/whl/cu128'
 } else {
-    'https://download.pytorch.org/whl/cpu'
+    & $venvPython -m pip install 'torch==2.5.1' --index-url 'https://download.pytorch.org/whl/cpu'
 }
-& $venvPython -m pip install 'torch==2.5.1' --index-url $torchIndex
 if ($LASTEXITCODE -ne 0) { throw "PyTorch installation failed" }
 
 # -- backend ---------------------------------------------------------------

@@ -13,6 +13,7 @@ import {
 import { Badge, EmptyState, Numeric, ProgressBar } from '@/components/ui/Primitives';
 import { UploadZone } from '@/components/UploadZone';
 import { SettingsPanel } from '@/components/SettingsPanel';
+import { ModelDownloadBanner } from '@/components/ModelDownloadBanner';
 import { useStore } from '@/state/store';
 
 function PendingList() {
@@ -203,6 +204,7 @@ export function QueueScreen() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-6">
+      <ModelDownloadBanner />
       <UploadZone />
       <PendingList />
       <SettingsPanel />

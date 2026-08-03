@@ -96,4 +96,51 @@
   .field-hint {
     @apply mt-1 text-xs text-ink-500;
   }
+
+  /*
+    The timeline slider. The track is drawn by the surrounding divs (so the
+    played and buffered ranges can be styled independently); this input sits
+    on top, transparent, purely to provide the thumb, pointer dragging and
+    keyboard support that a native range gives for free.
+  */
+  .media-scrubber {
+    @apply m-0 h-4 cursor-pointer appearance-none bg-transparent p-0;
+  }
+
+  .media-scrubber:focus {
+    outline: none;
+  }
+
+  .media-scrubber::-webkit-slider-runnable-track {
+    @apply h-4 bg-transparent;
+  }
+
+  .media-scrubber::-webkit-slider-thumb {
+    @apply appearance-none rounded-full border-0 bg-brand-600;
+    height: 0.875rem;
+    width: 0.875rem;
+    box-shadow: 0 0 0 3px rgb(255 255 255 / 0.9);
+    transition: transform 120ms ease;
+  }
+
+  .media-scrubber:hover::-webkit-slider-thumb,
+  .media-scrubber:focus-visible::-webkit-slider-thumb {
+    transform: scale(1.25);
+  }
+
+  .media-scrubber:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 3px rgb(255 255 255 / 0.9), 0 0 0 5px theme('colors.brand.400');
+  }
+
+  /* Firefox draws its own track and thumb. */
+  .media-scrubber::-moz-range-track {
+    @apply h-4 bg-transparent;
+  }
+
+  .media-scrubber::-moz-range-thumb {
+    @apply rounded-full border-0 bg-brand-600;
+    height: 0.875rem;
+    width: 0.875rem;
+    box-shadow: 0 0 0 3px rgb(255 255 255 / 0.9);
+  }
 }

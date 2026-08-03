@@ -44,7 +44,11 @@ CATALOGUE: tuple[CatalogueEntry, ...] = (
         id=HEBREW_MODEL_ID,
         label_he="עברית — ivrit.ai Whisper Large v3 (מומלץ)",
         hebrew_specialised=True,
-        approx_download_bytes=3_100_000_000,
+        # Measured from the repo: two safetensors shards totalling 6.17 GB.
+        # This fine-tune ships FP32 weights, so it is twice the size of
+        # OpenAI's FP16 upload of the same architecture. Do not "correct" this
+        # to 3.1 GB — that figure is the FP16 one and understates the download.
+        approx_download_bytes=6_180_000_000,
         license="Apache-2.0 (ראו docs/model-licensing.md)",
         notes_he="מודל שאומן במיוחד לעברית. זהו מודל ברירת המחדל.",
     ),
@@ -52,6 +56,7 @@ CATALOGUE: tuple[CatalogueEntry, ...] = (
         id="openai/whisper-large-v3",
         label_he="Whisper Large v3 (כללי — לא מותאם לעברית)",
         hebrew_specialised=False,
+        #: FP16 safetensors, roughly half the ivrit-ai fine-tune.
         approx_download_bytes=3_100_000_000,
         license="Apache-2.0",
         notes_he="מודל כללי. הדיוק בעברית נמוך יותר. בחרו רק אם המודל העברי אינו זמין.",

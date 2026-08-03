@@ -45,6 +45,14 @@ async function resolveConnection(): Promise<{ baseUrl: string; token: string }> 
     }
   }
 
+  // Served by the backend itself: the token arrives in a <meta> tag. It has to
+  // be a meta tag and not an inline script — the page's Content-Security-Policy
+  // is `script-src 'self'`, which blocks inline scripts silently.
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="tiktuv-token"]');
+  if (meta?.content) {
+    return { baseUrl: '', token: meta.content };
+  }
+
   const injected = window.__TIKTUV__;
   return {
     baseUrl: injected?.baseUrl ?? '',

@@ -38,6 +38,11 @@ asr = [
     "huggingface-hub==0.27.0",
     "safetensors==0.4.5",
 ]
+# The desktop window host. Renders with the system WebView2 runtime, so the
+# window is ours (own icon, own taskbar identity) without bundling a browser.
+desktop = [
+    "pywebview==5.3.2",
+]
 dev = [
     "pytest==8.3.4",
     "pytest-asyncio==0.25.0",

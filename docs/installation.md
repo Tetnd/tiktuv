@@ -4,8 +4,30 @@ Windows 10 (21H2 or newer) and Windows 11.
 
 ## 1. Install
 
-Run `Tiktuv_1.0.0_x64-setup.exe` (or the `.msi`). It installs for the current
-user, so no administrator rights are needed.
+**From the package you were given:** unzip it somewhere permanent (for example
+`C:\Tiktuv` — not inside the ZIP), then double-click **`Install Tiktuv.cmd`**.
+
+It installs everything needed, including Python, Node and FFmpeg if they are
+missing, and puts a **Tiktuv** icon on your Desktop and in the Start Menu. The
+first run takes several minutes.
+
+If Windows warns about the file, choose *More info* → *Run anyway*; the
+installer is a plain-text script you can open and read first.
+
+**From a source checkout**, the equivalent is:
+
+```bash
+.\install.ps1
+```
+
+That puts a **Tiktuv** icon on your Desktop and in the Start Menu. Launching it
+starts the local service in the background and opens Tiktuv in its own window —
+no address bar, no browser tabs, its own taskbar entry. Closing the window stops
+the service.
+
+**From an installer**, once one is built: run `Tiktuv_1.0.0_x64-setup.exe` (or
+the `.msi`). It installs for the current user, so no administrator rights are
+needed.
 
 Windows 10 may prompt to install the **WebView2 runtime** — accept it. Windows
 11 already includes it.
@@ -41,13 +63,21 @@ fixed, and each red item states how.
 
 ## 4. Download the model
 
-The Hebrew model is not bundled: it is about 3.1 GB and has its own licence. On
-the same screen, press **הורדה** next to
-**עברית — ivrit.ai Whisper Large v3**.
+The Hebrew model is not bundled: it is about **6.2 GB** and has its own licence.
 
-You are shown the download size and the exact destination folder before
-anything is fetched. **This is the only time Tiktuv uses the internet.** Once it
-completes, transcription works fully offline.
+**You do not need to do anything** — Tiktuv starts the download by itself the
+first time you open it, and shows the size, the destination folder and live
+progress while it runs. You can stop it and it resumes where it left off.
+
+If you would rather fetch it during setup, so the first transcription starts
+immediately:
+
+```bash
+scripts\install-desktop.ps1 -DownloadModel
+```
+
+**This is the only time Tiktuv uses the internet.** Once it completes,
+transcription works fully offline.
 
 ## 5. Transcribe
 
@@ -78,6 +108,13 @@ mid-job, **נסה שוב** resumes from the last saved point instead of restarti
 
 ## Uninstall
 
-Uninstall from **Settings → Apps**. That leaves your data in place. To remove
+If you installed from source, remove the shortcuts with:
+
+```bash
+scripts\install-desktop.ps1 -Uninstall
+```
+
+If you used an installer, uninstall from **Settings → Apps**. Either way your
+data stays in place. To remove
 that as well, delete `%LOCALAPPDATA%\Tiktuv` — it holds the models,
 transcripts, history and exports. See [privacy.md](privacy.md).

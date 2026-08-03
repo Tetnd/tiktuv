@@ -60,6 +60,24 @@ def _require_transformers() -> tuple[Any, Any, Any]:
     return AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
 
+def _clear_forced_decoder_ids(model: Any) -> None:
+    """Drop the checkpoint's baked-in ``forced_decoder_ids``.
+
+    ``ivrit-ai/whisper-large-v3`` ships a generation config with
+    ``forced_decoder_ids`` that pins a language token. We always pass
+    ``language`` and ``task`` explicitly, and Transformers 4.47 warns that the
+    two "create a conflict" before resolving it in favour of ours.
+
+    Relying on that tie-break is fragile: if a future version preferred the
+    baked-in ids, every job would silently decode in whatever language the
+    checkpoint happens to name. Clearing them makes our explicit setting the
+    only source of truth, and removes the warning.
+    """
+    for holder in (getattr(model, "generation_config", None), getattr(model, "config", None)):
+        if holder is not None and getattr(holder, "forced_decoder_ids", None):
+            holder.forced_decoder_ids = None
+
+
 def _require_torch() -> Any:
     try:
         import torch
@@ -158,6 +176,7 @@ class WhisperHFTranscriber:
                 # bitsandbytes places the model itself; moving it would fail.
                 model = model.to(self._resolved.torch_device)
             model.eval()
+            _clear_forced_decoder_ids(model)
             processor = AutoProcessor.from_pretrained(
                 self._model_id,
                 cache_dir=str(self._cache_dir),
@@ -236,8 +255,11 @@ class WhisperHFTranscriber:
                 message, code=ErrorCode.MODEL_LOAD_FAILED, context={"stage": "generate"}
             ) from exc
 
+        window_seconds = samples.size / max(1, request.sample_rate)
         segments = (
-            _segments_from_words(output) if word_level else _segments_from_chunks(output)
+            _segments_from_words(output, window_seconds)
+            if word_level
+            else _segments_from_chunks(output, window_seconds)
         )
         return TranscribeResult(segments=segments, language=_language_code(settings))
 
@@ -296,6 +318,14 @@ def _build_prompt(vocabulary: str, previous_text: str) -> str:
 
 
 def _chunk_bounds(chunk: dict[str, Any], fallback_start: float) -> tuple[float, float]:
+    """Read a chunk's ``(start, end)``, tolerating the ``None``s Whisper emits.
+
+    Whisper omits an end timestamp when the audio is cut mid-word, and can omit
+    both when it did not emit timestamp tokens at all — it warns about exactly
+    this ("did not predict an ending timestamp"). Treating a missing end as
+    equal to the start yields zero-length segments, which then never match the
+    editor's "currently playing" test and collapse subtitle cues.
+    """
     timestamp = chunk.get("timestamp") or (None, None)
     start, end = (timestamp + (None, None))[:2] if isinstance(timestamp, tuple) else (None, None)
     start_f = float(start) if start is not None else fallback_start
@@ -303,12 +333,39 @@ def _chunk_bounds(chunk: dict[str, Any], fallback_start: float) -> tuple[float, 
     return start_f, max(end_f, start_f)
 
 
-def _segments_from_chunks(output: dict[str, Any]) -> list[Segment]:
+#: Minimum length given to a segment whose timestamps came back degenerate.
+_MIN_SEGMENT_SECONDS = 0.2
+
+
+def _ensure_duration(segment: Segment, *, limit: float | None = None) -> Segment:
+    """Give a zero-length segment a usable span.
+
+    ``limit`` caps the end at the length of the window, so a repair can never
+    push a segment past the audio it came from.
+    """
+    if segment.end > segment.start:
+        return segment
+    end = segment.start + _MIN_SEGMENT_SECONDS
+    if limit is not None:
+        end = min(end, limit)
+        if end <= segment.start:
+            # Already at the very end of the window: extend backwards instead.
+            start = max(0.0, end - _MIN_SEGMENT_SECONDS)
+            return segment.model_copy(update={"start": start, "end": end})
+    return segment.model_copy(update={"end": end})
+
+
+def _segments_from_chunks(
+    output: dict[str, Any], window_seconds: float | None = None
+) -> list[Segment]:
     """Turn the pipeline's segment-level ``chunks`` into :class:`Segment`."""
     chunks = output.get("chunks") or []
     if not chunks:
         text = str(output.get("text") or "").strip()
-        return [Segment(id=0, start=0.0, end=0.0, text=text)] if text else []
+        if not text:
+            return []
+        # No timestamps at all: the text covers the whole window.
+        return [Segment(id=0, start=0.0, end=window_seconds or _MIN_SEGMENT_SECONDS, text=text)]
 
     segments: list[Segment] = []
     cursor = 0.0
@@ -318,11 +375,42 @@ def _segments_from_chunks(output: dict[str, Any]) -> list[Segment]:
         cursor = end
         if not text:
             continue
-        segments.append(Segment(id=index, start=start, end=end, text=text))
+        segments.append(
+            _ensure_duration(
+                Segment(id=index, start=start, end=end, text=text), limit=window_seconds
+            )
+        )
     return segments
 
 
-def _segments_from_words(output: dict[str, Any]) -> list[Segment]:
+def _redistribute_words(segment: Segment) -> Segment:
+    """Spread word times evenly when the model returned them all identical.
+
+    Whisper occasionally emits the same timestamp for every word in a run. Left
+    alone, clicking a word seeks to the wrong place and no word ever highlights.
+    """
+    if len(segment.words) < 2:
+        return segment
+    if segment.words[-1].end > segment.words[0].start:
+        return segment  # genuine, increasing timestamps
+
+    span = max(segment.end - segment.start, _MIN_SEGMENT_SECONDS)
+    step = span / len(segment.words)
+    words = [
+        word.model_copy(
+            update={
+                "start": segment.start + index * step,
+                "end": segment.start + (index + 1) * step,
+            }
+        )
+        for index, word in enumerate(segment.words)
+    ]
+    return segment.model_copy(update={"words": words})
+
+
+def _segments_from_words(
+    output: dict[str, Any], window_seconds: float | None = None
+) -> list[Segment]:
     """Group word-level chunks back into readable segments.
 
     ``return_timestamps="word"`` gives one chunk per word and no segments, so
@@ -332,7 +420,7 @@ def _segments_from_words(output: dict[str, Any]) -> list[Segment]:
     """
     chunks = output.get("chunks") or []
     if not chunks:
-        return _segments_from_chunks(output)
+        return _segments_from_chunks(output, window_seconds)
 
     segments: list[Segment] = []
     words: list[Word] = []
@@ -351,7 +439,8 @@ def _segments_from_words(output: dict[str, Any]) -> list[Segment]:
                 text=text,
                 words=[w.model_copy(update={"text": w.text.strip()}) for w in words],
             )
-            segments.append(clamp_words_to_segment(segment))
+            segment = _ensure_duration(segment, limit=window_seconds)
+            segments.append(_redistribute_words(clamp_words_to_segment(segment)))
         words = []
 
     for chunk in chunks:

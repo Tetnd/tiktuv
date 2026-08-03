@@ -29,6 +29,7 @@ class JobStage(StrEnum):
 
     PENDING = "pending"              # ממתין בתור
     PREPARING_MEDIA = "preparing_media"        # מכין את המדיה
+    DOWNLOADING_MODEL = "downloading_model"    # מוריד את המודל
     LOADING_MODEL = "loading_model"            # טוען מודל
     TRANSCRIBING = "transcribing"              # מתמלל
     DIARIZING = "diarizing"                    # מזהה דוברים
@@ -127,6 +128,11 @@ class TranscriptionSettings(BaseModel):
 
     #: Names, jargon and spelling hints. Fed to Whisper as the initial prompt.
     vocabulary_prompt: str = Field(default="", max_length=2000)
+
+    #: Fetch the model automatically when it is missing, instead of failing.
+    #: The UI always shows the size and destination before bytes are fetched;
+    #: this only removes the extra click.
+    auto_download_model: bool = True
 
     # Optional module — see tiktuv/diarization.
     enable_diarization: bool = False
@@ -340,6 +346,29 @@ class ModelInfo(BaseModel):
     cache_path: str
     license: str
     notes_he: str = ""
+
+
+class ModelDownloadState(StrEnum):
+    IDLE = "idle"
+    DOWNLOADING = "downloading"
+    READY = "ready"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ModelDownloadStatus(BaseModel):
+    model_config = ConfigDict(protected_namespaces=(), extra="forbid")
+
+    state: ModelDownloadState = ModelDownloadState.IDLE
+    model_id: str | None = None
+    percent: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    files_done: int = 0
+    files_total: int = 0
+    current_file: str = ""
+    eta_seconds: float | None = None
+    error: str | None = None
 
 
 class StorageUsage(BaseModel):

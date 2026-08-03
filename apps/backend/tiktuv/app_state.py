@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .asr.downloader import ModelDownloader
 from .asr.registry import ModelManager
 from .config import Settings
 from .db import dispose_engine, init_engine
 from .errors import FFmpegMissingError
-from .events import EventBus
+from .events import Event, EventBus, EventType
 from .jobs.pipeline import TranscriptionPipeline
 from .jobs.queue import JobQueue, restore_queue
 from .jobs.store import JobStore, TranscriptStore
@@ -30,6 +31,7 @@ class AppState:
     transcripts: TranscriptStore
     jobs: JobStore
     models: ModelManager
+    downloader: ModelDownloader
     queue: JobQueue
     #: ``None`` when FFmpeg is missing. The app still starts — the preflight
     #: screen needs to run in order to *tell* the user it is missing.
@@ -49,6 +51,14 @@ def build_state(settings: Settings, bus: EventBus) -> AppState:
     jobs = JobStore(settings, transcripts)
     models = ModelManager(settings)
 
+    downloader = ModelDownloader(settings)
+    # Mirror download progress onto the SSE stream so the UI can show it live.
+    downloader.add_listener(
+        lambda status: bus.publish_threadsafe(
+            Event(EventType.MODEL_STATUS, status.model_dump(mode="json"))
+        )
+    )
+
     tools: FFmpegTools | None
     try:
         tools = locate_tools(settings)
@@ -56,7 +66,9 @@ def build_state(settings: Settings, bus: EventBus) -> AppState:
         tools = None
         log.error("FFmpeg not found at startup", extra={"detail": exc.detail})
 
-    pipeline = TranscriptionPipeline(settings, models, transcripts, tools=tools)
+    pipeline = TranscriptionPipeline(
+        settings, models, transcripts, tools=tools, downloader=downloader
+    )
     job_queue = JobQueue(settings, jobs, transcripts, models, bus, pipeline=pipeline)
 
     return AppState(
@@ -65,6 +77,7 @@ def build_state(settings: Settings, bus: EventBus) -> AppState:
         transcripts=transcripts,
         jobs=jobs,
         models=models,
+        downloader=downloader,
         queue=job_queue,
         tools=tools,
     )

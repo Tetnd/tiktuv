@@ -13,6 +13,8 @@ import { formatClock, truncateMiddle } from '@/lib/format';
 import { Numeric } from '@/components/ui/Primitives';
 import { MediaPlayer, type PlayerHandle } from '@/components/MediaPlayer';
 import { ExportDialog } from '@/components/ExportDialog';
+import { TranscriptSearch, type SearchOptions } from '@/components/TranscriptSearch';
+import { findMatches, replaceAllMatches, replaceMatch, stepMatch } from '@/lib/search';
 import { useStore } from '@/state/store';
 
 const AUTOSAVE_DELAY_MS = 1200;
@@ -35,22 +37,6 @@ export function activeSegmentIndex(segments: Segment[], time: number): number {
   return candidate;
 }
 
-export function replaceAll(
-  segments: Segment[],
-  find: string,
-  replaceWith: string,
-): { segments: Segment[]; count: number } {
-  if (!find) return { segments, count: 0 };
-  let count = 0;
-  const next = segments.map((segment) => {
-    if (!segment.text.includes(find)) return segment;
-    const parts = segment.text.split(find);
-    count += parts.length - 1;
-    return { ...segment, text: parts.join(replaceWith), edited: true };
-  });
-  return { segments: next, count };
-}
-
 export function TranscriptEditor() {
   const transcript = useStore((s) => s.transcript);
   const loading = useStore((s) => s.transcriptLoading);
@@ -67,10 +53,17 @@ export function TranscriptEditor() {
   const [currentTime, setCurrentTime] = useState(0);
   const [findText, setFindText] = useState('');
   const [replaceText, setReplaceText] = useState('');
+  const [searchOptions, setSearchOptions] = useState<SearchOptions>({
+    caseSensitive: false,
+    wholeWord: false,
+  });
+  const [matchIndex, setMatchIndex] = useState(0);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [exportOpen, setExportOpen] = useState(false);
 
   const playerRef = useRef<PlayerHandle>(null);
+  //: segment id -> its textarea, so a match can be scrolled to and selected.
+  const textareaRefs = useRef(new Map<number, HTMLTextAreaElement>());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirty = useRef(false);
 
@@ -198,8 +191,82 @@ export function TranscriptEditor() {
     }
   };
 
+  // -- search ------------------------------------------------------------
+  const matches = useMemo(
+    () => findMatches(segments, findText, searchOptions),
+    [segments, findText, searchOptions],
+  );
+
+  const matchesBySegment = useMemo(() => {
+    const index = new Map<number, number>();
+    for (const match of matches) {
+      index.set(match.segmentIndex, (index.get(match.segmentIndex) ?? 0) + 1);
+    }
+    return index;
+  }, [matches]);
+
+  // Editing or retyping can leave the cursor past the end of the new results.
+  useEffect(() => {
+    setMatchIndex((current) => (current < matches.length ? current : 0));
+  }, [matches.length]);
+
+  /** Scroll a match into view and select it, so it is obvious where you are. */
+  const revealMatch = useCallback(
+    (index: number) => {
+      const match = matches[index];
+      if (!match) return;
+      const textarea = textareaRefs.current.get(match.segmentId);
+      if (!textarea) return;
+      textarea.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      // Selecting without focusing keeps typing in the search box working,
+      // and the highlighted segment shows which match is current.
+      textarea.setSelectionRange(match.start, match.end);
+    },
+    [matches],
+  );
+
+  const stepSearch = useCallback(
+    (delta: number) => {
+      if (matches.length === 0) return;
+      const next = stepMatch(matchIndex, matches.length, delta);
+      setMatchIndex(next);
+      revealMatch(next);
+    },
+    [matchIndex, matches.length, revealMatch],
+  );
+
+  // Jump to the first hit when a *new* query is submitted.
+  //
+  // Keyed on the query alone, not on the result count: editing a segment
+  // changes how many matches exist, and re-revealing on that would yank the
+  // view away from the line being typed.
+  const lastRevealedQuery = useRef('');
+  useEffect(() => {
+    if (findText && findText !== lastRevealedQuery.current && matches.length > 0) {
+      lastRevealedQuery.current = findText;
+      revealMatch(0);
+    } else if (!findText) {
+      lastRevealedQuery.current = '';
+    }
+    // `matches` is recomputed in the same render as `findText`, so it is
+    // already current here; depending on it too would defeat the guard above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findText]);
+
+  const doReplaceCurrent = () => {
+    const match = matches[matchIndex];
+    if (!match) return;
+    commit(replaceMatch(segments, match, replaceText));
+    pushToast({ tone: 'success', title: 'מופע אחד הוחלף.' });
+  };
+
   const doReplaceAll = () => {
-    const { segments: next, count } = replaceAll(segments, findText, replaceText);
+    const { segments: next, count } = replaceAllMatches(
+      segments,
+      findText,
+      replaceText,
+      searchOptions,
+    );
     if (count === 0) {
       pushToast({ tone: 'info', title: 'לא נמצאו התאמות.' });
       return;
@@ -271,33 +338,22 @@ export function TranscriptEditor() {
       />
 
       {/* -- find & replace -------------------------------------------- */}
-      <div className="card flex flex-wrap items-end gap-3 p-3">
-        <div className="min-w-[180px] flex-1">
-          <label className="field-label" htmlFor="find-input">
-            חיפוש
-          </label>
-          <input
-            id="find-input"
-            className="field-input"
-            value={findText}
-            onChange={(event) => setFindText(event.target.value)}
-          />
-        </div>
-        <div className="min-w-[180px] flex-1">
-          <label className="field-label" htmlFor="replace-input">
-            החלפה ב־
-          </label>
-          <input
-            id="replace-input"
-            className="field-input"
-            value={replaceText}
-            onChange={(event) => setReplaceText(event.target.value)}
-          />
-        </div>
-        <button type="button" className="btn-secondary" onClick={doReplaceAll} disabled={!findText}>
-          החלף הכול
-        </button>
-      </div>
+      <TranscriptSearch
+        query={findText}
+        onQueryChange={(value) => {
+          setFindText(value);
+          setMatchIndex(0);
+        }}
+        replacement={replaceText}
+        onReplacementChange={setReplaceText}
+        options={searchOptions}
+        onOptionsChange={setSearchOptions}
+        matchCount={matches.length}
+        activeIndex={matchIndex}
+        onStep={stepSearch}
+        onReplaceCurrent={doReplaceCurrent}
+        onReplaceAll={doReplaceAll}
+      />
 
       {/* -- speakers --------------------------------------------------- */}
       {speakerKeys.length > 0 && (
@@ -319,13 +375,23 @@ export function TranscriptEditor() {
       <ol className="card divide-y divide-ink-200" data-testid="segment-list">
         {segments.map((segment, index) => {
           const isActive = index === activeIndex;
+          const isCurrentMatch = matches[matchIndex]?.segmentIndex === index;
+          const hasMatch = matchesBySegment.has(index);
           return (
             <li
               key={segment.id}
               data-testid={`segment-${segment.id}`}
               data-active={isActive || undefined}
+              data-match={hasMatch || undefined}
+              data-current-match={isCurrentMatch || undefined}
               className={`flex gap-3 p-3 transition-colors ${
-                isActive ? 'bg-brand-50' : 'bg-white'
+                isCurrentMatch
+                  ? 'bg-amber-50 ring-2 ring-inset ring-amber-400'
+                  : hasMatch
+                    ? 'bg-amber-50/40'
+                    : isActive
+                      ? 'bg-brand-50'
+                      : 'bg-white'
               }`}
             >
               <button
@@ -338,6 +404,10 @@ export function TranscriptEditor() {
               </button>
 
               <textarea
+                ref={(node) => {
+                  if (node) textareaRefs.current.set(segment.id, node);
+                  else textareaRefs.current.delete(segment.id);
+                }}
                 aria-label={`מקטע ${index + 1}`}
                 className="min-h-[52px] w-full resize-y rounded-lg border border-transparent bg-transparent p-2 text-[15px] leading-relaxed text-ink-900 outline-none focus:border-brand-400 focus:bg-white"
                 value={segment.text}

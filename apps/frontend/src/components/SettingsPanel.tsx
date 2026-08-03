@@ -5,6 +5,7 @@ import type { ExportFormat } from '@shared/index';
 import { EXPORT_FORMATS } from '@shared/index';
 import { FORMAT_LABELS } from '@/lib/format';
 import { Field, Toggle } from '@/components/ui/Primitives';
+import { FolderField } from '@/components/ui/FolderField';
 import { useStore } from '@/state/store';
 
 export function SettingsPanel() {
@@ -224,6 +225,13 @@ export function SettingsPanel() {
               hint="שתיקה ארוכה פותחת פסקה חדשה."
             />
             <Toggle
+              id="setting-auto-download"
+              checked={settings.auto_download_model}
+              onChange={(value) => update({ auto_download_model: value })}
+              label="הורדת מודל אוטומטית"
+              hint="אם המודל חסר, הוא יורד אוטומטית לפני התמלול במקום להיכשל."
+            />
+            <Toggle
               id="setting-diarization"
               checked={settings.enable_diarization}
               onChange={(value) => update({ enable_diarization: value })}
@@ -251,20 +259,14 @@ export function SettingsPanel() {
           </div>
 
           <div className="md:col-span-2">
-            <Field
+            <FolderField
+              id="setting-output"
               label="תיקיית פלט"
-              htmlFor="setting-output"
+              value={settings.output_dir ?? ''}
+              onChange={(value) => update({ output_dir: value || null })}
+              placeholder="ברירת מחדל: תיקיית הייצוא של היישום"
               hint="השאירו ריק כדי לשמור בתיקיית הייצוא של היישום."
-            >
-              <input
-                id="setting-output"
-                type="text"
-                className="field-input ltr-run"
-                placeholder="C:\Users\...\Documents\תמלולים"
-                value={settings.output_dir ?? ''}
-                onChange={(event) => update({ output_dir: event.target.value || null })}
-              />
-            </Field>
+            />
           </div>
         </div>
       )}
