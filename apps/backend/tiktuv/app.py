@@ -201,6 +201,26 @@ def health_ok(instance: RunningInstance) -> bool:
         return False
 
 
+def _terminate_pid(pid: int) -> None:
+    """Best-effort kill of a hung previous instance. Never raises."""
+    if pid <= 0 or pid == os.getpid():
+        return
+    try:
+        import psutil
+
+        process = psutil.Process(pid)
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except psutil.TimeoutExpired:
+            process.kill()
+        return
+    except Exception:  # noqa: BLE001 - fall through to os.kill
+        pass
+    with contextlib.suppress(OSError, ProcessLookupError, PermissionError):
+        os.kill(pid, 9)
+
+
 def clear_orphaned_webviews(storage_path: Path) -> int:
     """Kill WebView2 host processes left behind by a previous run.
 
@@ -329,12 +349,22 @@ def main(argv: list[str] | None = None) -> int:
     # Attach to an instance that is already serving instead of starting a
     # second backend on the same data directory.
     existing = read_lock(settings)
-    if existing is not None and health_ok(existing):
-        log.info("attaching to the running backend", extra={"port": existing.port})
-        opened = open_window(existing.base_url)
-        if not opened:
-            _open_in_browser(existing.base_url)
-        return 0
+    if existing is not None:
+        if health_ok(existing):
+            log.info("attaching to the running backend", extra={"port": existing.port})
+            opened = open_window(existing.base_url)
+            if not opened:
+                _open_in_browser(existing.base_url)
+            return 0
+        # The lock names a live PID that is not answering /api/health — a hung
+        # previous launch. Without clearing it, acquire() refuses to start and
+        # pythonw exits with nothing on screen, which looks like a dead icon.
+        log.warning(
+            "clearing a hung instance that still holds the lock",
+            extra={"pid": existing.pid, "port": existing.port},
+        )
+        _terminate_pid(existing.pid)
+        (settings.data_dir / "instance.lock").unlink(missing_ok=True)
 
     settings.port = find_free_port(settings.port)
     try:

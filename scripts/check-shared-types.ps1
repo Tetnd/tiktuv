@@ -33,6 +33,7 @@ $pairs = @{
     'ExportFormat'      = 'EXPORT_FORMATS'
     'CheckStatus'       = 'CHECK_STATUSES'
     'ModelDownloadState' = 'MODEL_DOWNLOAD_STATES'
+    'UrlFetchState'     = 'URL_FETCH_STATES'
 }
 
 $failed = $false

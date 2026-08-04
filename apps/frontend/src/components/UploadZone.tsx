@@ -1,6 +1,7 @@
 /** Drag-and-drop area plus a file picker. */
 
 import { useCallback, useRef, useState } from 'react';
+import { ZoomImportDialog } from '@/components/ZoomImportDialog';
 import { ACCEPT_ATTRIBUTE, ACCEPTED_EXTENSIONS, isAcceptedFile } from '@/lib/format';
 import { useStore } from '@/state/store';
 
@@ -8,7 +9,10 @@ export function UploadZone() {
   const addFiles = useStore((s) => s.addFiles);
   const pushToast = useStore((s) => s.pushToast);
   const [dragging, setDragging] = useState(false);
+  const [zoomOpen, setZoomOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Stable, so the dialog's effects do not re-run on every parent render.
+  const closeZoom = useCallback(() => setZoomOpen(false), []);
 
   const accept = useCallback(
     (fileList: FileList | null) => {
@@ -57,13 +61,22 @@ export function UploadZone() {
         הקבצים מעובדים על המחשב שלכם בלבד ואינם נשלחים לשום מקום.
       </p>
 
-      <button
-        type="button"
-        className="btn-primary mt-5"
-        onClick={() => inputRef.current?.click()}
-      >
-        בחירת קבצים
-      </button>
+      <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={() => inputRef.current?.click()}
+        >
+          בחירת קבצים
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => setZoomOpen(true)}
+        >
+          תמלול מקישור Zoom
+        </button>
+      </div>
 
       <input
         ref={inputRef}
@@ -79,6 +92,8 @@ export function UploadZone() {
           event.target.value = '';
         }}
       />
+
+      {zoomOpen && <ZoomImportDialog onClose={closeZoom} />}
     </div>
   );
 }

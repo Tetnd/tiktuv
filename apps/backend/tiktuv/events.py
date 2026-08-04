@@ -34,6 +34,7 @@ class EventType(StrEnum):
     TRANSCRIPT_PARTIAL = "transcript.partial"
     QUEUE_CHANGED = "queue.changed"
     MODEL_STATUS = "model.status"
+    MEDIA_FETCH = "media.fetch"
 
 
 @dataclass(frozen=True, slots=True)

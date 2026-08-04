@@ -11,6 +11,7 @@ and it always shows its size and destination first.
 
 - 🇮🇱 Hebrew-first UI and Hebrew-first ASR, with correct RTL rendering everywhere
 - 🎬 MP3, MP4, WAV, M4A, MOV, MKV, WEBM — audio extracted with FFmpeg
+- 🔗 Import a Zoom cloud recording straight from its share link — see [Zoom recordings](#zoom-recordings)
 - ⚡ CUDA GPU / CPU, automatic device detection, FP16, configurable batch size
 - 🧩 Streaming chunked processing — multi-hour recordings without loading them into RAM
 - ✍️ Built-in RTL transcript editor with a synchronized media player
@@ -24,6 +25,7 @@ and it always shows its size and destination first.
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Exact commands](#exact-commands)
+- [Zoom recordings](#zoom-recordings)
 - [Documentation](#documentation)
 - [Repository layout](#repository-layout)
 - [Status & known limitations](#status--known-limitations)
@@ -243,6 +245,29 @@ The MSI and NSIS installers land in
 
 ---
 
+## Zoom recordings
+
+Under **בחירת קבצים** in the upload area there is a second button, **תמלול
+מקישור Zoom**. Paste a cloud-recording share link (`/rec/share/…` or
+`/rec/play/…`), and Tiktuv resolves it, downloads the MP4 to your media folder
+with a live progress bar, and queues it for transcription like any dropped file.
+
+- The download runs **directly between your machine and Zoom**. The link is not
+  sent anywhere else, and the recording is transcribed locally as usual.
+- Only `zoom.us` hostnames on a recording path are accepted; anything else is
+  rejected before a request is made.
+- Passcode-protected links show a passcode field. **This path is untested** —
+  no protected link was available to verify against.
+- The file is named after the meeting topic when Zoom exposes one. Anonymous
+  share links carry no topic, so those are named by their recording start time
+  (`Zoom 2026-05-28 14-03.mp4`).
+- **Only import recordings you are allowed to have.** Tiktuv fetches the same
+  stream the Zoom player uses, so it also works on recordings whose owner
+  disabled the download button. That is a permission you should have from the
+  owner, not one the tool grants you.
+
+---
+
 ## Documentation
 
 | Document | Contents |
@@ -284,8 +309,8 @@ Be precise about what has and has not been exercised.
 
 **Verified by running it:**
 
-- 377 backend tests + 5 skipped (`pytest`), 65 frontend tests (`vitest`)
-- `ruff` clean, `mypy --strict` clean across 47 backend modules
+- 464 backend tests + 5 skipped (`pytest`), 150 frontend tests (`vitest`)
+- `ruff` clean, `mypy --strict` clean across 54 backend modules
 - Frontend type-check, lint and production build clean
 - End-to-end smoke test: 31 checks against a real backend process — Hebrew
   filenames, transcription, editing, all six export formats written and opened,
@@ -305,12 +330,15 @@ Be precise about what has and has not been exercised.
 
 **Not verified here, and you should not assume it works until you check:**
 
-- **CUDA and FP16 execution.** This machine has no GPU, so the CUDA branch of
-  device selection and FP16 inference have not been executed. CPU inference is
-  verified.
+- **CUDA and FP16 execution.** Verified only as far as device selection and a
+  CUDA op probe; full FP16 inference through the model has not been run here.
+  CPU inference is verified end to end.
 - **Transcription accuracy on real Hebrew speech.** The end-to-end runs use
   synthetic audio, which proves the pipeline but says nothing about word error
   rate. Transcribe a real recording and read the output.
+- **Zoom passcode-protected links.** Link resolution, streaming download,
+  progress and cancellation are verified against a real recording; the passcode
+  submission path is not.
 - **The Tauri MSI/NSIS installer.** No Rust toolchain here, so
   `scriptsuild-windows.ps1` has not been run end to end. The desktop-shortcut
   route (`scripts\install-desktop.ps1`) is what was verified.

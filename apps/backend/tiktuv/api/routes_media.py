@@ -21,10 +21,11 @@ from fastapi import APIRouter, File, Form, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..errors import ErrorCode, MediaError, TiktuvError
+from ..importers import zoom
 from ..jobs.pipeline import import_media_file
 from ..logging_conf import get_logger
 from ..media.probe import probe_media
-from ..schemas import MediaInfo
+from ..schemas import MediaInfo, UrlFetchStatus
 from ..security import sanitize_filename, unique_filename
 from .deps import AuthDep, StateDep
 
@@ -134,3 +135,47 @@ async def upload_file(
         raise MediaError("the uploaded file is empty", code=ErrorCode.MEDIA_CORRUPT)
 
     return _finalise(state, destination, Path(raw_name))
+
+
+# --------------------------------------------------------------------------
+# Import from a URL (Zoom cloud recordings)
+# --------------------------------------------------------------------------
+class FromUrlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(min_length=1, max_length=4096)
+    #: Only needed when the recording is passcode-protected.
+    passcode: str | None = Field(default=None, max_length=200)
+
+
+@router.post("/from-url", response_model=UrlFetchStatus)
+def import_from_url(
+    payload: FromUrlRequest, state: StateDep, _auth: AuthDep
+) -> UrlFetchStatus:
+    """Download a cloud recording into the media directory, in the background.
+
+    Returns immediately. Poll ``GET /api/media/from-url`` or listen for
+    ``media.fetch`` events for progress; when it reports ``ready`` its
+    ``media_token`` can be passed straight to ``POST /api/jobs``.
+    """
+    url = payload.url.strip()
+    if not zoom.is_zoom_url(url):
+        raise MediaError(
+            "only Zoom recording links are supported at the moment",
+            code=ErrorCode.INVALID_REQUEST,
+            context={"expected": "https://<company>.zoom.us/rec/share/… or /rec/play/…"},
+        )
+    return state.fetcher.start(url, payload.passcode)
+
+
+@router.get("/from-url", response_model=UrlFetchStatus)
+def url_import_status(state: StateDep, _auth: AuthDep) -> UrlFetchStatus:
+    """Progress of the current or most recent URL import. Safe to poll."""
+    return state.fetcher.status()
+
+
+@router.delete("/from-url", response_model=UrlFetchStatus)
+def cancel_url_import(state: StateDep, _auth: AuthDep) -> UrlFetchStatus:
+    """Stop the running download and discard the partial file."""
+    state.fetcher.cancel()
+    return state.fetcher.status()

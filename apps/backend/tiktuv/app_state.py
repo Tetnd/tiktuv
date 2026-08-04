@@ -15,6 +15,7 @@ from .config import Settings
 from .db import dispose_engine, init_engine
 from .errors import FFmpegMissingError
 from .events import Event, EventBus, EventType
+from .importers.fetcher import UrlFetcher
 from .jobs.pipeline import TranscriptionPipeline
 from .jobs.queue import JobQueue, restore_queue
 from .jobs.store import JobStore, TranscriptStore
@@ -32,6 +33,7 @@ class AppState:
     jobs: JobStore
     models: ModelManager
     downloader: ModelDownloader
+    fetcher: UrlFetcher
     queue: JobQueue
     #: ``None`` when FFmpeg is missing. The app still starts — the preflight
     #: screen needs to run in order to *tell* the user it is missing.
@@ -66,6 +68,13 @@ def build_state(settings: Settings, bus: EventBus) -> AppState:
         tools = None
         log.error("FFmpeg not found at startup", extra={"detail": exc.detail})
 
+    fetcher = UrlFetcher(settings, tools=tools)
+    fetcher.add_listener(
+        lambda status: bus.publish_threadsafe(
+            Event(EventType.MEDIA_FETCH, status.model_dump(mode="json"))
+        )
+    )
+
     pipeline = TranscriptionPipeline(
         settings, models, transcripts, tools=tools, downloader=downloader
     )
@@ -78,6 +87,7 @@ def build_state(settings: Settings, bus: EventBus) -> AppState:
         jobs=jobs,
         models=models,
         downloader=downloader,
+        fetcher=fetcher,
         queue=job_queue,
         tools=tools,
     )

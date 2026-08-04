@@ -18,6 +18,7 @@ import type {
   SystemInfo,
   Transcript,
   TranscriptionSettings,
+  UrlFetchStatus,
   Segment,
 } from '@shared/index';
 
@@ -29,6 +30,7 @@ export class ApiError extends Error {
     readonly remedyHe: string,
     readonly detail: string,
     readonly status: number,
+    readonly context: Record<string, unknown> = {},
   ) {
     super(`${code}: ${detail || messageHe}`);
     this.name = 'ApiError';
@@ -39,12 +41,14 @@ export class ApiError extends Error {
     let message = 'אירעה שגיאה בלתי צפויה.';
     let remedy = 'נסו שוב, או בדקו את יומן היישום.';
     let detail = '';
+    let context: Record<string, unknown> = {};
     try {
       const body = await response.json();
       code = body.code ?? code;
       message = body.message ?? message;
       remedy = body.remedy ?? remedy;
       detail = body.detail ?? '';
+      context = body.context ?? {};
       // FastAPI validation errors have a different shape.
       if (!body.code && Array.isArray(body.detail)) {
         code = 'INVALID_REQUEST';
@@ -54,7 +58,7 @@ export class ApiError extends Error {
     } catch {
       detail = response.statusText;
     }
-    return new ApiError(code, message, remedy, detail, response.status);
+    return new ApiError(code, message, remedy, detail, response.status, context);
   }
 }
 
@@ -179,6 +183,16 @@ export const api = {
     form.append('filename', file.name);
     return request<ImportedMedia>('/api/media/upload', { method: 'POST', body: form });
   },
+
+  /** Start downloading a Zoom recording. Returns immediately. */
+  importFromUrl: (url: string, passcode: string | null) =>
+    request<UrlFetchStatus>('/api/media/from-url', {
+      method: 'POST',
+      ...json({ url, passcode }),
+    }),
+  urlImportStatus: () => request<UrlFetchStatus>('/api/media/from-url'),
+  cancelUrlImport: () =>
+    request<UrlFetchStatus>('/api/media/from-url', { method: 'DELETE' }),
 
   // -- jobs --------------------------------------------------------------
   createJob: (mediaToken: string, settings: TranscriptionSettings, autostart = true) =>

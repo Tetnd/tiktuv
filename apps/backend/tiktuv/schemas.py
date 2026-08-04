@@ -348,6 +348,32 @@ class ModelInfo(BaseModel):
     notes_he: str = ""
 
 
+class UrlFetchState(StrEnum):
+    IDLE = "idle"
+    RESOLVING = "resolving"
+    DOWNLOADING = "downloading"
+    READY = "ready"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class UrlFetchStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: UrlFetchState = UrlFetchState.IDLE
+    #: Meeting topic, once known.
+    title: str = ""
+    percent: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    eta_seconds: float | None = None
+    error: str | None = None
+    #: Present once the download finished and was validated.
+    media: MediaInfo | None = None
+    #: Token to pass to POST /api/jobs, same as an uploaded file.
+    media_token: str | None = None
+
+
 class ModelDownloadState(StrEnum):
     IDLE = "idle"
     DOWNLOADING = "downloading"

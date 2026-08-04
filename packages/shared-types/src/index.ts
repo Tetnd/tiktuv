@@ -48,6 +48,28 @@ export type ExportFormat = (typeof EXPORT_FORMATS)[number];
 export const CHECK_STATUSES = ['ok', 'warning', 'error'] as const;
 export type CheckStatus = (typeof CHECK_STATUSES)[number];
 
+export const URL_FETCH_STATES = [
+  'idle',
+  'resolving',
+  'downloading',
+  'ready',
+  'failed',
+  'cancelled',
+] as const;
+export type UrlFetchState = (typeof URL_FETCH_STATES)[number];
+
+export interface UrlFetchStatus {
+  state: UrlFetchState;
+  title: string;
+  percent: number;
+  downloaded_bytes: number;
+  total_bytes: number;
+  eta_seconds: number | null;
+  error: string | null;
+  media: MediaInfo | null;
+  media_token: string | null;
+}
+
 export const MODEL_DOWNLOAD_STATES = [
   'idle',
   'downloading',
@@ -258,6 +280,7 @@ export const EVENT_TYPES = [
   'transcript.partial',
   'queue.changed',
   'model.status',
+  'media.fetch',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

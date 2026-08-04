@@ -208,6 +208,31 @@ chcp 65001
 
 ---
 
+### A Zoom link will not import
+
+Tiktuv accepts cloud **recording** links only — the host must be a `zoom.us`
+domain and the path must start with `/rec/share/` or `/rec/play/`. A meeting
+invitation (`/j/1234567890`) is not a recording and has nothing to download.
+
+If the link is a recording and it still fails:
+
+| What you see | Cause | Fix |
+|---|---|---|
+| "הדביקו קישור להקלטת Zoom" | The link is not a `/rec/` link, or part of it was cut off when copying | Copy the whole URL from the browser address bar |
+| A passcode field appears | The recording is passcode-protected | Enter the passcode. This path is untested — if it fails, download the file from Zoom in your browser and drop it into Tiktuv instead |
+| The download fails partway | The signed media URL expired, or the connection dropped | Try again; Tiktuv re-resolves the link on each attempt and deletes the partial file |
+| The import succeeds but the file will not transcribe | Zoom returned an HTML error page instead of video | Tiktuv probes the finished download with FFmpeg, so this surfaces at import; re-copy the link and retry |
+
+Imports are named after the meeting topic when Zoom exposes one. Anonymous
+share links carry no topic, so they are named by recording start time
+(`Zoom 2026-05-28 14-03.mp4`).
+
+Only import recordings you have permission to. Tiktuv fetches the same stream
+the Zoom player uses, which also works when the owner disabled Zoom's download
+button — having the link is not the same as having permission.
+
+---
+
 ## Collecting diagnostics
 
 ```bash
