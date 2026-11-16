@@ -42,6 +42,10 @@ class CatalogueEntry:
     #: Cloud models are transcribed by a remote service; nothing is downloaded
     #: to disk and the pipeline skips the download/load stages for them.
     is_cloud: bool = False
+    #: FP16 in-memory weight size in bytes. Drives the per-model VRAM budget and
+    #: batch sizing in :func:`tiktuv.asr.device.resolve_device`. Zero for cloud
+    #: models, which are never loaded into local memory.
+    fp16_weight_bytes: int = 0
 
 
 CATALOGUE: tuple[CatalogueEntry, ...] = (
@@ -56,6 +60,8 @@ CATALOGUE: tuple[CatalogueEntry, ...] = (
         approx_download_bytes=6_180_000_000,
         license="Apache-2.0 (ראו docs/model-licensing.md)",
         notes_he="מודל שאומן במיוחד לעברית. זהו מודל ברירת המחדל.",
+        #: 1.55 B parameters → ~3.1 GB in FP16 (the dtype CUDA loads it in).
+        fp16_weight_bytes=3_100_000_000,
     ),
     CatalogueEntry(
         id="openai/whisper-large-v3",
@@ -65,6 +71,8 @@ CATALOGUE: tuple[CatalogueEntry, ...] = (
         approx_download_bytes=3_100_000_000,
         license="Apache-2.0",
         notes_he="מודל כללי. הדיוק בעברית נמוך יותר. בחרו רק אם המודל העברי אינו זמין.",
+        #: Same 1.55 B parameter architecture as the Hebrew fine-tune.
+        fp16_weight_bytes=3_100_000_000,
     ),
     CatalogueEntry(
         id="openai/whisper-small",
@@ -73,6 +81,8 @@ CATALOGUE: tuple[CatalogueEntry, ...] = (
         approx_download_bytes=970_000_000,
         license="Apache-2.0",
         notes_he="קטן ומהיר, לבדיקות בלבד. אינו מומלץ לתמלול עברי אמיתי.",
+        #: 244 M parameters → ~488 MB in FP16, a fraction of large-v3.
+        fp16_weight_bytes=488_000_000,
     ),
     CatalogueEntry(
         id=SONIOX_MODEL_ID,
@@ -258,7 +268,7 @@ class ModelManager:
         if entry.is_cloud:
             return self._acquire_cloud(entry)
 
-        resolved = self._resolve(settings)
+        resolved = self._resolve(settings, entry)
         key = (
             settings.model_id,
             resolved.torch_device,
@@ -320,11 +330,12 @@ class ModelManager:
             )
         return api_key
 
-    def _resolve(self, settings: TranscriptionSettings) -> ResolvedDevice:
+    def _resolve(self, settings: TranscriptionSettings, entry: CatalogueEntry) -> ResolvedDevice:
         return resolve_device(
             DevicePreference(settings.device),
             requested_fp16=settings.use_fp16,
             requested_batch_size=settings.batch_size,
+            weights_fp16_bytes=entry.fp16_weight_bytes,
         )
 
     def _release_locked(self) -> None:

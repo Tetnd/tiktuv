@@ -91,10 +91,12 @@ class ResolvedDevice:
         return "float16" if self.use_fp16 else "float32"
 
 
-#: Rough working-set estimate for whisper-large-v3 (1.55 B params) including
-#: activations and beam-search state. Used to pick a safe batch size and to
-#: warn before the driver OOMs mid-job.
+#: FP16 in-memory weight size for whisper-large-v3 (1.55 B params). The default
+#: for callers that do not name a model, and the reference point used to scale
+#: the per-batch-item working set down for smaller models.
 _LARGE_V3_WEIGHTS_FP16_BYTES = 3_100_000_000
+#: Rough per-batch-item working set for whisper-large-v3 (activations and
+#: beam-search state). Scaled down in proportion to the model's weight size.
 _PER_BATCH_ITEM_BYTES = 420_000_000
 
 
@@ -104,8 +106,16 @@ def resolve_device(
     requested_fp16: bool,
     requested_batch_size: int,
     devices: list[DeviceInfo] | None = None,
+    weights_fp16_bytes: int = _LARGE_V3_WEIGHTS_FP16_BYTES,
 ) -> ResolvedDevice:
-    """Pick a device honouring ``preference``, and size the batch to fit."""
+    """Pick a device honouring ``preference``, and size the batch to fit.
+
+    ``weights_fp16_bytes`` is the selected model's FP16 in-memory size and
+    drives both the VRAM check and the batch size, so a whisper-small job is
+    not budgeted as if it were whisper-large-v3.
+    """
+    if weights_fp16_bytes <= 0:
+        weights_fp16_bytes = _LARGE_V3_WEIGHTS_FP16_BYTES
     available = devices if devices is not None else list_devices()
     cuda_devices = [d for d in available if d.kind == "cuda"]
     cpu = next((d for d in available if d.kind == "cpu"), None)
@@ -144,7 +154,7 @@ def resolve_device(
         )
 
     budget = chosen.free_memory_bytes or chosen.total_memory_bytes or 0
-    weights = _LARGE_V3_WEIGHTS_FP16_BYTES * (1 if use_fp16 else 2)
+    weights = weights_fp16_bytes * (1 if use_fp16 else 2)
     if budget and budget < weights:
         raise ModelError(
             f"model needs about {weights // (1 << 20)} MiB but only "
@@ -157,7 +167,11 @@ def resolve_device(
         batch_size = requested_batch_size
     else:
         headroom = max(0, budget - weights)
-        batch_size = max(1, min(16, int(headroom // _PER_BATCH_ITEM_BYTES) or 1))
+        per_batch = max(
+            1,
+            int(_PER_BATCH_ITEM_BYTES * weights_fp16_bytes / _LARGE_V3_WEIGHTS_FP16_BYTES),
+        )
+        batch_size = max(1, min(16, int(headroom // per_batch) or 1))
 
     return ResolvedDevice(
         torch_device=f"cuda:{chosen.index or 0}",
