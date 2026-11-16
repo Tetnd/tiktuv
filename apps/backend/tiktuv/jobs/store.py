@@ -36,6 +36,7 @@ from ..schemas import (
     TranscriptAnalysis,
     TranscriptionSettings,
 )
+from ..security import is_within
 
 log = get_logger("jobs.store")
 
@@ -436,11 +437,7 @@ class JobStore:
 
     # -- helpers -----------------------------------------------------------
     def _is_managed(self, path: Path) -> bool:
-        try:
-            resolved = path.resolve()
-        except OSError:
-            return False
-        return resolved.is_relative_to(self._settings.media_dir.resolve())
+        return is_within(path, self._settings.media_dir)
 
     @staticmethod
     def _require(session: object, job_id: str) -> JobRecord:

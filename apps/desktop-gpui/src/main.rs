@@ -12,6 +12,7 @@ mod history;
 mod models;
 mod player;
 mod rtl_text;
+mod seek_bar;
 mod settings;
 mod system;
 

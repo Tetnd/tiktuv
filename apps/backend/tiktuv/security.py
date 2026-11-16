@@ -10,6 +10,7 @@ filename before it reaches the filesystem — while keeping Hebrew intact.
 from __future__ import annotations
 
 import hmac
+import os
 import re
 import unicodedata
 import uuid
@@ -93,6 +94,38 @@ def _is_relative_to(child: PurePath, parent: PurePath) -> bool:
     return True
 
 
+def is_within(candidate: str | Path, root: Path) -> bool:
+    """True when ``candidate`` is ``root`` or sits inside it.
+
+    The path is read twice. Fully resolved, which is what catches ``..``
+    segments, symlinks and Windows short names (``PROGRA~1``). And normalised
+    but unresolved, because the resolved form alone is not dependable on
+    Windows: when the process runs inside an application container (an MSIX
+    package, which is how the app is launched from some shells), writes under
+    ``%LOCALAPPDATA%`` are redirected into the package's ``LocalCache``. A file
+    the backend imported itself then resolves inside that cache while the media
+    directory still resolves to the real location, and a perfectly managed file
+    looks as though it had escaped — which is what used to make playback fail
+    with ``PATH_NOT_ALLOWED``.
+
+    The second reading normalises the path first, so ``..`` cannot traverse out
+    of the root either way; only the symlink identity is taken on trust, and
+    these roots hold files the application itself wrote.
+    """
+    path = Path(candidate)
+    try:
+        resolved = path.resolve()
+        root_resolved = root.resolve()
+        if resolved == root_resolved or _is_relative_to(resolved, root_resolved):
+            return True
+    except (OSError, ValueError):
+        pass
+
+    absolute = PurePath(os.path.normcase(os.path.abspath(path)))
+    root_absolute = PurePath(os.path.normcase(os.path.abspath(root)))
+    return absolute == root_absolute or _is_relative_to(absolute, root_absolute)
+
+
 def resolve_within(candidate: str | Path, roots: list[Path]) -> Path:
     """Resolve ``candidate`` and assert it stays inside one of ``roots``.
 
@@ -108,7 +141,7 @@ def resolve_within(candidate: str | Path, roots: list[Path]) -> Path:
         raise SecurityError(f"cannot resolve path: {exc}", code=ErrorCode.PATH_NOT_ALLOWED) from exc
 
     for root in roots:
-        if resolved == root or _is_relative_to(resolved, root.resolve()):
+        if resolved == root or is_within(candidate, root):
             return resolved
 
     raise SecurityError(

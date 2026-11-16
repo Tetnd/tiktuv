@@ -9,17 +9,19 @@ use std::time::Duration;
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::*;
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Disableable as _, Selectable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Styled as _,
-    Subscription, Window, div, px, relative, rgb,
+    AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    px, rgb,
 };
 
 use crate::app::{App, Screen, ToastTone};
 use crate::format::*;
 use crate::rtl_text::rtl_paragraph;
+use crate::seek_bar::seek_bar;
 use crate::models::*;
 use crate::player::{Player, SKIP_SECONDS, SPEEDS};
 
@@ -55,7 +57,6 @@ pub struct EditorState {
     pub transcript: Transcript,
     pub segments: Vec<Segment>,
     pub speakers: HashMap<String, String>,
-    pub states: Vec<Entity<TextareaState>>,
     pub _subscriptions: Vec<Subscription>,
     pub history: Vec<Vec<Segment>>,
     pub future: Vec<Vec<Segment>>,
@@ -89,28 +90,17 @@ impl EditorState {
         let search_query = cx.new(|cx| InputState::new(window, cx).placeholder(rtl("חיפוש בתמליל…")));
         let search_replacement = cx.new(|cx| InputState::new(window, cx).placeholder(rtl("החלפה ב…")));
 
-        let mut states = Vec::new();
-        for segment in &segments {
-            let text = segment.text.clone();
-            let state = cx.new(|cx| {
-                let mut s = TextareaState::new(window, cx);
-                s.set_value(rtl(&text), window, cx);
-                s.set_text_align(gpui_kit::TextAlign::Right, cx);
-                s.auto_grow(1, 12)
-            });
-            states.push(state);
-        }
-
+        // The transcript itself is read-only here, and shown as reordered
+        // paragraphs rather than text fields.
+        //
+        // gpui-kit's multi-line input lays its text out left-to-right and
+        // ignores `set_text_align` for anything but a single line, so an
+        // editable segment could be reordered to read correctly *or* sit on
+        // the right edge, never both — and text typed into a reordered buffer
+        // lands in visual order, which reverses words and mirrors brackets on
+        // the way back out. Find and replace still edits the text; typing goes
+        // through the web app until the toolkit can lay out right-to-left.
         let mut subscriptions = Vec::new();
-        for (index, state) in states.clone().iter().enumerate() {
-            let sub = cx.subscribe_in(state, window, move |this, state, event, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    let text = state.read(cx).value().to_string();
-                    this.on_segment_edit(index, text, cx);
-                }
-            });
-            subscriptions.push(sub);
-        }
 
         let mut speaker_inputs = HashMap::new();
         let mut speaker_keys: Vec<String> = Vec::new();
@@ -147,7 +137,6 @@ impl EditorState {
             transcript,
             segments,
             speakers,
-            states,
             _subscriptions: subscriptions,
             history: Vec::new(),
             future: Vec::new(),
@@ -260,7 +249,6 @@ impl App {
         // -- segment rows -------------------------------------------------
         let mut rows: Vec<AnyElement> = Vec::new();
         for (i, seg) in editor.segments.iter().enumerate() {
-            let state = &editor.states[i];
             let is_active = i as isize == active;
             let is_search_match = editor.search_matches.get(editor.search_active) == Some(&i);
             let start = seg.start;
@@ -269,6 +257,9 @@ impl App {
                 .as_ref()
                 .map(|k| editor.speakers.get(k).cloned().unwrap_or_else(|| k.clone()));
             let row = div()
+                .id(("segment-row", i))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| this.seek_to(start, cx)))
                 .flex()
                 .flex_row_reverse()
                 .items_start()
@@ -298,7 +289,7 @@ impl App {
                                     .child(rtl(&speaker_label.clone().unwrap_or_default())),
                             )
                         })
-                        .child(Textarea::new(state).bordered(false).appearance(false)),
+                        .child(div().py_0p5().text_sm().child(rtl_paragraph(&seg.text))),
                 );
             rows.push(row.into_any_element());
         }
@@ -343,18 +334,14 @@ impl App {
                                     .ghost()
                                     .label(rtl("ביטול פעולה"))
                                     .disabled(!can_undo)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.undo_edit(window, cx)
-                                    })),
+                                    .on_click(cx.listener(|this, _, _, cx| this.undo_edit(cx))),
                             )
                             .child(
                                 Button::new("redo")
                                     .ghost()
                                     .label(rtl("ביצוע חוזר"))
                                     .disabled(!can_redo)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.redo_edit(window, cx)
-                                    })),
+                                    .on_click(cx.listener(|this, _, _, cx| this.redo_edit(cx))),
                             )
                             .child(
                                 Button::new("copy-all")
@@ -398,7 +385,7 @@ impl App {
                             .child(
                                 Button::new("skip-back")
                                     .ghost()
-                                    .label(rtl("−5s"))
+                                    .label("−5s")
                                     .on_click(cx.listener(|this, _, _, cx| this.skip_media(-SKIP_SECONDS, cx))),
                             )
                             .child(
@@ -411,7 +398,7 @@ impl App {
                             .child(
                                 Button::new("skip-fwd")
                                     .ghost()
-                                    .label(rtl("+5s"))
+                                    .label("+5s")
                                     .on_click(cx.listener(|this, _, _, cx| this.skip_media(SKIP_SECONDS, cx))),
                             )
                             .child(
@@ -428,18 +415,11 @@ impl App {
                             ),
                     )
                     .child(
-                        div()
-                            .w_full()
-                            .h_2()
-                            .rounded_full()
-                            .bg(rgb(0xe5e7eb))
-                            .child(
-                                div()
-                                    .h_full()
-                                    .rounded_full()
-                                    .bg(rgb(0x4f46e5))
-                                    .w(relative(progress as f32)),
-                            ),
+                        seek_bar("timeline", progress as f32).on_seek(cx.listener(
+                            move |this, fraction: &f32, _, cx| {
+                                this.seek_to(total * *fraction as f64, cx)
+                            },
+                        )),
                     )
                     .when(media_error.is_some(), |this| {
                         this.child(
@@ -469,19 +449,6 @@ impl App {
     }
 
     // -- editor actions ---------------------------------------------------
-    fn on_segment_edit(&mut self, index: usize, text: String, cx: &mut Context<Self>) {
-        let mut next = self
-            .editor
-            .as_ref()
-            .map(|e| e.segments.clone())
-            .unwrap_or_default();
-        if let Some(s) = next.get_mut(index) {
-            s.text = rtl(&text);
-            s.edited = true;
-        }
-        self.commit_segments(next, cx);
-    }
-
     fn commit_segments(&mut self, next: Vec<Segment>, cx: &mut Context<Self>) {
         if let Some(e) = &mut self.editor {
             e.history.push(e.segments.clone());
@@ -495,35 +462,29 @@ impl App {
         self.save_now(cx);
     }
 
-    fn undo_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn undo_edit(&mut self, cx: &mut Context<Self>) {
         let Some(prev) = self.editor.as_mut().and_then(|e| e.history.pop()) else {
             return;
         };
         if let Some(e) = &mut self.editor {
             e.future.push(e.segments.clone());
         }
-        self.apply_segments(prev, window, cx);
+        self.apply_segments(prev, cx);
     }
 
-    fn redo_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn redo_edit(&mut self, cx: &mut Context<Self>) {
         let Some(next) = self.editor.as_mut().and_then(|e| e.future.pop()) else {
             return;
         };
         if let Some(e) = &mut self.editor {
             e.history.push(e.segments.clone());
         }
-        self.apply_segments(next, window, cx);
+        self.apply_segments(next, cx);
     }
 
-    fn apply_segments(&mut self, segs: Vec<Segment>, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_segments(&mut self, segs: Vec<Segment>, cx: &mut Context<Self>) {
         if let Some(e) = &mut self.editor {
             e.segments = segs;
-            let texts: Vec<String> = e.segments.iter().map(|s| s.text.clone()).collect();
-            for (i, state) in e.states.iter().enumerate() {
-                if let Some(text) = texts.get(i) {
-                    let _ = state.update(cx, |state, cx| state.set_value(rtl(text), window, cx));
-                }
-            }
         }
         cx.notify();
         self.save_now(cx);

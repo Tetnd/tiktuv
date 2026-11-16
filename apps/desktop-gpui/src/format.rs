@@ -38,16 +38,39 @@ pub fn rtl(text: &str) -> String {
     let Some(para) = info.paragraphs.first() else {
         return mirrored;
     };
-    info.reorder_line(para, para.range.clone()).into_owned()
+    let visual = info.reorder_line(para, para.range.clone()).into_owned();
+
+    // Step 3: drop the bidi controls. They were instructions for the two steps
+    // above and have nothing left to say once the text is in visual order;
+    // leaving them in only risks a renderer drawing a box for one.
+    visual.chars().filter(|ch| !is_bidi_control(*ch)).collect()
 }
 
-/// Left-to-right mark.
-pub const LRM: char = '\u{200e}';
-/// Right-to-left mark.
-pub const RLM: char = '\u{200f}';
+/// The invisible characters that steer the bidi algorithm: the marks, the
+/// isolates, and the deprecated embeddings and overrides.
+fn is_bidi_control(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
 
+/// Left-to-right isolate: opens a run the surrounding text cannot reach into,
+/// and that cannot reach out of it.
+pub const LRI: char = '\u{2066}';
+/// Pop directional isolate: closes the run [`LRI`] opened.
+pub const PDI: char = '\u{2069}';
+
+/// Wraps a value so the bidi algorithm reads it as one left-to-right island.
+///
+/// An isolate, not a left-to-right *mark*. A mark is an ordinary strong
+/// character: it holds its own run together, but two marked runs separated by
+/// neutrals — "3.2 MB · 03:35 · model" — merge into a single left-to-right
+/// island, and the three parts are then read in the wrong order. An isolate
+/// keeps each value a sealed unit that the right-to-left text around it orders
+/// as one piece, which is what `unicode-bidi: isolate` does in the web app.
 pub fn isolate(value: impl std::fmt::Display) -> String {
-    format!("{LRM}{value}{LRM}")
+    format!("{LRI}{value}{PDI}")
 }
 
 /// Keeps a technical value — a version, an identifier, a path, a masked key —
@@ -137,10 +160,18 @@ pub fn format_bytes(bytes: u64) -> String {
     } else {
         (value * 10.0).round() as u64
     };
+    // One isolate around the whole number. Isolating the two halves
+    // separately leaves the decimal point between two sealed islands, and the
+    // right-to-left text around them then orders the islands — "3.2" becomes
+    // "2.3".
     if exponent == 0 {
         format!("{} {}", isolate(rounded), SIZE_UNITS[exponent])
     } else {
-        format!("{}.{} {}", isolate(rounded / 10), isolate(rounded % 10), SIZE_UNITS[exponent])
+        format!(
+            "{} {}",
+            isolate(format!("{}.{}", rounded / 10, rounded % 10)),
+            SIZE_UNITS[exponent]
+        )
     }
 }
 
@@ -150,7 +181,9 @@ pub fn format_percent(fraction: f64) -> String {
     } else {
         0.0
     };
-    format!("{}%", isolate((clamped * 100.0).round() as u64))
+    // The sign belongs inside the isolate; left out, it is a neutral that
+    // the surrounding Hebrew pulls to the other side of the number.
+    isolate(format!("{}%", (clamped * 100.0).round() as u64))
 }
 
 pub fn format_eta(seconds: Option<f64>) -> String {
@@ -246,4 +279,82 @@ pub fn file_extension(filename: &str) -> String {
 pub fn is_accepted_file(filename: &str) -> bool {
     let ext = file_extension(filename);
     ACCEPTED_EXTENSIONS.contains(&ext.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reads a visual-order string the way a Hebrew reader does: right to
+    /// left, so the pieces come out in the order they were meant to be read.
+    fn pieces(visual: &str) -> Vec<String> {
+        let mut parts: Vec<String> = visual.split(" · ").map(str::to_string).collect();
+        parts.reverse();
+        parts
+    }
+
+    #[test]
+    fn a_number_stays_in_one_piece() {
+        // 3.2 MiB. Isolating the halves separately used to render "2.3".
+        let visual = rtl(&format_bytes(3_353_661));
+        assert!(visual.contains("3.2"), "{visual}");
+        assert!(!visual.contains("2.3"), "{visual}");
+    }
+
+    #[test]
+    fn a_percentage_keeps_its_sign_on_the_right_side() {
+        let visual = rtl(&format_percent(0.85));
+        assert!(visual.contains("85%"), "{visual}");
+    }
+
+    #[test]
+    fn separated_values_are_read_in_order() {
+        let line = format!(
+            "{} · {} · {}",
+            format_bytes(3_353_661),
+            format_clock(215.0),
+            isolate("soniox/stt-async-v6")
+        );
+        let visual = rtl(&line);
+        let read = pieces(&visual);
+        assert_eq!(read.len(), 3, "{visual}");
+        assert!(read[0].contains("3.2"), "{visual}");
+        assert!(read[1].contains("03:35"), "{visual}");
+        assert!(read[2].contains("soniox/stt-async-v6"), "{visual}");
+    }
+
+    #[test]
+    fn a_mixed_version_is_not_split_in_half() {
+        let visual = rtl(&format!("PyTorch: {}", isolate("2.5.1+cpu")));
+        assert!(visual.contains("2.5.1+cpu"), "{visual}");
+    }
+
+    #[test]
+    fn reordering_is_reversible() {
+        // Text goes through `rtl` on the way to the screen and back again on
+        // the way to the backend, so the pair has to be lossless.
+        for text in [
+            "שלום (עולם) שלום",
+            "אנחנו לומדים C-Sharp במערכת .NET,",
+            "הרצאת מבוא לקורס C# .NET (סי-שארפ).mp3",
+        ] {
+            assert_eq!(rtl(&rtl(text)), text, "{text}");
+        }
+    }
+
+    #[test]
+    fn brackets_are_mirrored_for_the_renderer() {
+        // gpui draws each character as it is, so the character that lands on
+        // the right of a Hebrew parenthetical must be the one that *looks*
+        // like an opening bracket there.
+        let visual = rtl("שלום (עולם) שלום");
+        assert_eq!(visual, "םולש (םלוע) םולש");
+    }
+
+    #[test]
+    fn bidi_controls_do_not_reach_the_renderer() {
+        let visual = rtl(&format!("גרסה: {}", isolate("1.0.0")));
+        assert!(!visual.contains(LRI), "{visual:?}");
+        assert!(!visual.contains(PDI), "{visual:?}");
+    }
 }

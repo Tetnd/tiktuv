@@ -10,6 +10,7 @@ import pytest
 from tiktuv.errors import ErrorCode, SecurityError, redact_paths
 from tiktuv.security import (
     constant_time_equals,
+    is_within,
     resolve_within,
     sanitize_filename,
     unique_filename,
@@ -119,6 +120,56 @@ class TestResolveWithin:
     def test_rejects_empty_root_list(self, tmp_path: Path) -> None:
         with pytest.raises(SecurityError):
             resolve_within(tmp_path, [])
+
+
+class TestIsWithin:
+    def test_file_inside_root(self, tmp_path: Path) -> None:
+        root = tmp_path / "media"
+        root.mkdir()
+        target = root / "clip.mp3"
+        target.write_text("x", encoding="utf-8")
+        assert is_within(target, root)
+
+    def test_the_root_itself(self, tmp_path: Path) -> None:
+        assert is_within(tmp_path, tmp_path)
+
+    def test_blocks_traversal(self, tmp_path: Path) -> None:
+        root = tmp_path / "media"
+        root.mkdir()
+        assert not is_within(root / ".." / "secret.mp3", root)
+
+    def test_blocks_sibling_directory(self, tmp_path: Path) -> None:
+        root = tmp_path / "media"
+        other = tmp_path / "private"
+        root.mkdir()
+        other.mkdir()
+        assert not is_within(other / "keys.txt", root)
+
+    def test_missing_file_inside_root_still_counts(self, tmp_path: Path) -> None:
+        # The media route checks containment of a path it has already found on
+        # disk, but containment itself must not depend on the file existing.
+        root = tmp_path / "media"
+        root.mkdir()
+        assert is_within(root / "not-yet.mp3", root)
+
+    def test_accepts_a_redirected_resolution(self, tmp_path: Path, monkeypatch) -> None:
+        # Windows app-container redirection resolves a file under the package
+        # cache while its directory resolves to the real location. The
+        # normalised absolute form is what keeps such a file playable.
+        root = tmp_path / "media"
+        root.mkdir()
+        target = root / "clip.mp3"
+        target.write_text("x", encoding="utf-8")
+
+        real_resolve = Path.resolve
+
+        def fake_resolve(self, strict=False):  # type: ignore[no-untyped-def]
+            if self == target:
+                return tmp_path / "LocalCache" / "Local" / "media" / "clip.mp3"
+            return real_resolve(self, strict) if strict else real_resolve(self)
+
+        monkeypatch.setattr(Path, "resolve", fake_resolve)
+        assert is_within(target, root)
 
 
 class TestValidateOutputDir:

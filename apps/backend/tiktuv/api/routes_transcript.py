@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from ..errors import ErrorCode, TiktuvError
 from ..logging_conf import get_logger
 from ..schemas import Transcript, UpdateSegmentsRequest
+from ..security import is_within
 from .deps import AuthDep, StateDep, get_state, require_token
 
 log = get_logger("api.transcript")
@@ -129,7 +130,7 @@ def stream_media(
         raise TiktuvError("media file is missing", code=ErrorCode.MEDIA_CORRUPT)
 
     resolved = path.resolve()
-    if not resolved.is_relative_to(state.settings.media_dir.resolve()):
+    if not is_within(path, state.settings.media_dir):
         raise TiktuvError("media path is outside the managed directory",
                           code=ErrorCode.PATH_NOT_ALLOWED)
 
