@@ -191,6 +191,34 @@ def _run_checks(state: object) -> list[PreflightCheck]:
         )
     )
 
+    # -- Soniox (cloud) --------------------------------------------------
+    soniox_configured = state.credentials.get() is not None  # type: ignore[attr-defined]
+    checks.append(
+        PreflightCheck(
+            id="soniox",
+            label_he="Soniox (תמלול בענן)",
+            status=CheckStatus.OK if soniox_configured else CheckStatus.WARNING,
+            detail="מפתח API מוגדר" if soniox_configured else "לא הוגדר מפתח API",
+            remedy=""
+            if soniox_configured
+            else "הגדירו מפתח API כדי לתמלל דרך Soniox.",
+        )
+    )
+
+    # -- DeepSeek (AI analysis) -----------------------------------------
+    deepseek_configured = state.deepseek.get() is not None  # type: ignore[attr-defined]
+    checks.append(
+        PreflightCheck(
+            id="deepseek",
+            label_he="DeepSeek (ניתוח AI)",
+            status=CheckStatus.OK if deepseek_configured else CheckStatus.WARNING,
+            detail="מפתח API מוגדר" if deepseek_configured else "לא הוגדר מפתח API",
+            remedy=""
+            if deepseek_configured
+            else "הגדירו מפתח API כדי ליצור תקציר, נקודות מפתח, משימות וניתוח דוברים.",
+        )
+    )
+
     # -- Disk -------------------------------------------------------------
     free = free_disk_bytes(settings.data_dir)
     if free >= _RECOMMENDED_FREE_BYTES:

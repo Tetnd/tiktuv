@@ -16,6 +16,8 @@ import json
 import os
 from dataclasses import dataclass
 
+import psutil
+
 from .config import Settings
 from .logging_conf import get_logger
 
@@ -40,21 +42,25 @@ class RunningInstance:
 def _process_alive(pid: int) -> bool:
     """True when ``pid`` names a live process.
 
-    ``os.kill(pid, 0)`` is the portable liveness probe and works on Windows in
-    CPython. A PermissionError means the process exists but belongs to someone
-    else — still alive for our purposes.
+    Not ``os.kill(pid, 0)``: on Windows that probe is unreliable for a PID that
+    has already exited. It usually raises ``OSError`` (WinError 87), but it can
+    instead surface as ``SystemError: <built-in function kill> returned a
+    result with an exception set`` — which is not an ``OSError``, so no amount
+    of ``except OSError`` catches it, and startup dies on a stale lock file
+    left by a previous crash. Observed exactly that way on Windows 11 with
+    CPython 3.12.
+
+    ``psutil`` is already a dependency and probes this correctly on every
+    platform, including reporting a process owned by another user as alive.
     """
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        return bool(psutil.pid_exists(pid))
+    except Exception:
+        # A liveness probe must never take the application down with it.
+        log.warning("could not probe pid liveness", extra={"pid": pid})
         return False
-    except PermissionError:  # pragma: no cover - different-user process
-        return True
-    except OSError:
-        return False
-    return True
 
 
 def read_lock(settings: Settings) -> RunningInstance | None:

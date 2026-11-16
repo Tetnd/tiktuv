@@ -203,6 +203,54 @@ class Transcript(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# AI analysis (DeepSeek)
+# --------------------------------------------------------------------------
+class ActionItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task: str
+    #: "דובר 1", "דובר 2", ... or None when not attributable.
+    assignee: str | None = None
+
+
+class NamedEntity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    #: person / organization / location / date / other
+    type: str = "other"
+
+
+class SpeakerSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    speaker: str
+    summary: str
+
+
+class SpeakerQuote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    speaker: str
+    quotes: list[str] = Field(default_factory=list)
+
+
+class TranscriptAnalysis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    summary: str = ""
+    key_points: list[str] = Field(default_factory=list)
+    action_items: list[ActionItem] = Field(default_factory=list)
+    named_entities: list[NamedEntity] = Field(default_factory=list)
+    speaker_summaries: list[SpeakerSummary] = Field(default_factory=list)
+    speaker_quotes: list[SpeakerQuote] = Field(default_factory=list)
+    #: The LLM model id that produced this.
+    model: str = ""
+    generated_at: datetime | None = None
+
+
+# --------------------------------------------------------------------------
 # Media
 # --------------------------------------------------------------------------
 class MediaInfo(BaseModel):
@@ -346,6 +394,9 @@ class ModelInfo(BaseModel):
     cache_path: str
     license: str
     notes_he: str = ""
+    #: True when transcription happens on a remote service (Soniox) rather than
+    #: a locally-downloaded model.
+    is_cloud: bool = False
 
 
 class UrlFetchState(StrEnum):

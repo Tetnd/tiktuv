@@ -33,6 +33,7 @@ from ..schemas import (
     MediaInfo,
     Segment,
     Transcript,
+    TranscriptAnalysis,
     TranscriptionSettings,
 )
 
@@ -130,6 +131,51 @@ class TranscriptStore:
                 created_at=datetime.now(UTC),
             )
         )
+
+    # -- AI analysis -------------------------------------------------------
+    def analysis_path_for(self, job_id: str) -> Path:
+        return self._dir / f"{job_id}.analysis.json"
+
+    def load_analysis(self, job_id: str) -> TranscriptAnalysis | None:
+        path = self.analysis_path_for(job_id)
+        if not path.is_file():
+            return None
+        try:
+            return TranscriptAnalysis.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            log.error("corrupt analysis file", extra={"job_id": job_id, "error": str(exc)})
+            return None
+
+    def save_analysis(self, analysis: TranscriptAnalysis) -> Path:
+        path = self.analysis_path_for(analysis.job_id)
+        payload = analysis.model_dump_json(indent=2)
+        handle = tempfile.NamedTemporaryFile(  # noqa: SIM115
+            mode="w",
+            encoding="utf-8",
+            dir=self._dir,
+            prefix=f".{analysis.job_id}-analysis-",
+            suffix=".tmp",
+            delete=False,
+        )
+        try:
+            with handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(handle.name, path)
+        except OSError as exc:
+            Path(handle.name).unlink(missing_ok=True)
+            raise TiktuvError(
+                f"could not save analysis: {exc}", code=ErrorCode.INSUFFICIENT_DISK
+            ) from exc
+        return path
+
+    def delete_analysis(self, job_id: str) -> bool:
+        path = self.analysis_path_for(job_id)
+        if path.is_file():
+            path.unlink()
+            return True
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -319,6 +365,7 @@ class JobStore:
             session.delete(record)
 
         self._transcripts.delete(job_id)
+        self._transcripts.delete_analysis(job_id)
         # The imported working copy is ours; always reclaim it.
         if working.is_file() and self._is_managed(working):
             working.unlink(missing_ok=True)

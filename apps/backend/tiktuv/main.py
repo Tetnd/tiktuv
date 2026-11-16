@@ -13,10 +13,13 @@ from fastapi.responses import JSONResponse
 
 from . import __version__
 from .api import (
+    routes_analysis,
+    routes_deepseek,
     routes_events,
     routes_export,
     routes_jobs,
     routes_media,
+    routes_soniox,
     routes_system,
     routes_transcript,
     static_files,
@@ -168,6 +171,9 @@ def create_app(settings: Settings | None = None, bus: EventBus | None = None) ->
         routes_transcript,
         routes_export,
         routes_events,
+        routes_soniox,
+        routes_deepseek,
+        routes_analysis,
     ):
         app.include_router(module.router)
 

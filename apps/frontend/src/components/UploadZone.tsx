@@ -8,11 +8,17 @@ import { useStore } from '@/state/store';
 export function UploadZone() {
   const addFiles = useStore((s) => s.addFiles);
   const pushToast = useStore((s) => s.pushToast);
+  const models = useStore((s) => s.models);
+  const settings = useStore((s) => s.settings);
+  const update = useStore((s) => s.updateSettings);
   const [dragging, setDragging] = useState(false);
   const [zoomOpen, setZoomOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   // Stable, so the dialog's effects do not re-run on every parent render.
   const closeZoom = useCallback(() => setZoomOpen(false), []);
+
+  const selectedModel = models.find((model) => model.id === settings.model_id);
+  const usingCloud = selectedModel?.is_cloud === true;
 
   const accept = useCallback(
     (fileList: FileList | null) => {
@@ -57,8 +63,33 @@ export function UploadZone() {
           {ACCEPTED_EXTENSIONS.join(', ').toUpperCase()}
         </span>
       </p>
-      <p className="mt-1 text-sm text-ink-500">
-        הקבצים מעובדים על המחשב שלכם בלבד ואינם נשלחים לשום מקום.
+
+      <div className="mx-auto mt-4 max-w-sm">
+        <label htmlFor="upload-engine" className="field-label">
+          מנוע תמלול
+        </label>
+        <select
+          id="upload-engine"
+          className="field-input"
+          value={settings.model_id}
+          onChange={(event) => update({ model_id: event.target.value })}
+        >
+          {models.length === 0 && (
+            <option value={settings.model_id}>{settings.model_id}</option>
+          )}
+          {models.map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.label_he}
+              {!model.is_cloud && !model.downloaded ? ' — טרם הורד' : ''}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <p className="mt-3 text-sm text-ink-500">
+        {usingCloud
+          ? 'האודיו יישלח לשרתים של Soniox לצורך תמלול.'
+          : 'הקבצים מעובדים על המחשב שלכם בלבד ואינם נשלחים לשום מקום.'}
       </p>
 
       <div className="mt-5 flex flex-wrap items-center justify-center gap-2">

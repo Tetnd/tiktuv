@@ -7,11 +7,13 @@ tests can build a fully isolated instance pointed at a temporary directory.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 from .asr.downloader import ModelDownloader
 from .asr.registry import ModelManager
 from .config import Settings
+from .credentials import DeepSeekCredentials, SonioxCredentials
 from .db import dispose_engine, init_engine
 from .errors import FFmpegMissingError
 from .events import Event, EventBus, EventType
@@ -35,9 +37,13 @@ class AppState:
     downloader: ModelDownloader
     fetcher: UrlFetcher
     queue: JobQueue
+    credentials: SonioxCredentials
+    deepseek: DeepSeekCredentials
     #: ``None`` when FFmpeg is missing. The app still starts — the preflight
     #: screen needs to run in order to *tell* the user it is missing.
     tools: FFmpegTools | None = None
+    #: Background thread that finishes crash recovery after the server is up.
+    recovery: threading.Thread | None = None
 
     def require_tools(self) -> FFmpegTools:
         if self.tools is None:
@@ -51,7 +57,9 @@ def build_state(settings: Settings, bus: EventBus) -> AppState:
 
     transcripts = TranscriptStore(settings)
     jobs = JobStore(settings, transcripts)
-    models = ModelManager(settings)
+    credentials = SonioxCredentials(settings)
+    deepseek = DeepSeekCredentials(settings)
+    models = ModelManager(settings, credentials=credentials)
 
     downloader = ModelDownloader(settings)
     # Mirror download progress onto the SSE stream so the UI can show it live.
@@ -89,20 +97,52 @@ def build_state(settings: Settings, bus: EventBus) -> AppState:
         downloader=downloader,
         fetcher=fetcher,
         queue=job_queue,
+        credentials=credentials,
+        deepseek=deepseek,
         tools=tools,
     )
 
 
 def start_state(state: AppState) -> None:
-    """Recover from an unclean shutdown, then start accepting work."""
-    recovered = state.jobs.recover_orphans()
-    if recovered:
-        log.warning("marked orphaned jobs as failed", extra={"job_ids": recovered})
+    """Start accepting work, then finish crash recovery in the background.
+
+    Recovery marks jobs left ``running`` by an unclean shutdown as failed and
+    re-submits jobs that were still queued. It writes to SQLite and, on a cold
+    start, that can take seconds — the window must not wait for it, so it runs
+    after the server is already answering ``/api/health``. The UI is told over
+    SSE when it finishes, so a recovered job flips to failed without a manual
+    refresh.
+    """
     state.queue.start()
-    restore_queue(state.jobs, state.queue)
+    state.recovery = threading.Thread(
+        target=_recover,
+        args=(state,),
+        name="tiktuv-recovery",
+        daemon=True,
+    )
+    state.recovery.start()
+
+
+def _recover(state: AppState) -> None:
+    try:
+        recovered = state.jobs.recover_orphans()
+        if recovered:
+            log.warning("marked orphaned jobs as failed", extra={"job_ids": recovered})
+        restored = restore_queue(state.jobs, state.queue)
+        if recovered or restored:
+            # The job list the UI fetched on mount may show these jobs in their
+            # pre-recovery state; a queue.changed event makes it re-sync.
+            state.bus.publish_threadsafe(
+                Event(EventType.QUEUE_CHANGED, {"reason": "recovery"})
+            )
+    except Exception:  # pragma: no cover - recovery must never take the app down
+        log.exception("background recovery failed")
 
 
 def stop_state(state: AppState) -> None:
     state.queue.shutdown()
+    if state.recovery is not None:
+        # Recovery writes to the engine this stops, so let it finish first.
+        state.recovery.join(timeout=5.0)
     state.models.release()
     dispose_engine()

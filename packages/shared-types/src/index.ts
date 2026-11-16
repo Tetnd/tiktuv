@@ -243,6 +243,7 @@ export interface ModelInfo {
   cache_path: string;
   license: string;
   notes_he: string;
+  is_cloud: boolean;
 }
 
 export interface StorageUsage {
@@ -267,6 +268,48 @@ export interface SystemInfo {
   devices: DeviceInfo[];
   checks: PreflightCheck[];
   storage: StorageUsage | null;
+}
+
+export interface SonioxStatus {
+  configured: boolean;
+  masked_key: string;
+}
+
+export interface DeepSeekStatus {
+  configured: boolean;
+  masked_key: string;
+}
+
+export interface ActionItem {
+  task: string;
+  assignee: string | null;
+}
+
+export interface NamedEntity {
+  name: string;
+  type: string;
+}
+
+export interface SpeakerSummary {
+  speaker: string;
+  summary: string;
+}
+
+export interface SpeakerQuote {
+  speaker: string;
+  quotes: string[];
+}
+
+export interface TranscriptAnalysis {
+  job_id: string;
+  summary: string;
+  key_points: string[];
+  action_items: ActionItem[];
+  named_entities: NamedEntity[];
+  speaker_summaries: SpeakerSummary[];
+  speaker_quotes: SpeakerQuote[];
+  model: string;
+  generated_at: string | null;
 }
 
 /** SSE event names emitted by the backend. */

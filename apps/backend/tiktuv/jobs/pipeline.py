@@ -219,12 +219,16 @@ class TranscriptionPipeline:
             normalize=settings.normalize_punctuation,
         )
 
-        # -- 6. optional diarization -------------------------------------
+        # -- 6. speakers ---------------------------------------------------
         speakers: dict[str, str] = {}
-        if settings.enable_diarization:
+        if settings.enable_diarization and get_backend() is not None:
             segments, speakers = self._diarize(
                 job, media_path, tools, segments, cancel=cancel, on_progress=on_progress
             )
+        # A cloud transcriber (Soniox) attaches speaker ids itself; a local
+        # diarization backend is optional. Build the "דובר 1" display map from
+        # whichever source produced speakers.
+        speakers = speakers or build_speaker_map(segments)
 
         transcript = Transcript(
             job_id=job.id,

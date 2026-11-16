@@ -104,15 +104,16 @@ export default function App() {
   const screen = useStore((s) => s.screen);
   const refreshJobs = useStore((s) => s.refreshJobs);
   const refreshModels = useStore((s) => s.refreshModels);
-  const refreshSystem = useStore((s) => s.refreshSystem);
   const applyProgress = useStore((s) => s.applyProgress);
   const setConnected = useStore((s) => s.setConnected);
 
   useEffect(() => {
+    // Jobs and models are needed right away. System info is not: it imports
+    // PyTorch on the backend (~seconds on a cold start) and is only displayed
+    // on the settings screen, so it is fetched lazily there instead.
     void refreshJobs();
     void refreshModels();
-    void refreshSystem();
-  }, [refreshJobs, refreshModels, refreshSystem]);
+  }, [refreshJobs, refreshModels]);
 
   useEffect(() => {
     // `EventSource` does not exist in the jsdom test environment.

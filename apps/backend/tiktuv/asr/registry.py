@@ -17,12 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import Settings
+from ..credentials import SonioxCredentials
 from ..errors import ErrorCode, ModelError
 from ..logging_conf import get_logger
 from ..schemas import DevicePreference, ModelInfo, TranscriptionSettings
 from .base import Transcriber
 from .device import ResolvedDevice, empty_cuda_cache, resolve_device
 from .mock import MOCK_MODEL_ID, MockTranscriber
+from .soniox import SONIOX_MODEL_ID, SonioxTranscriber
 
 log = get_logger("asr.registry")
 
@@ -37,6 +39,9 @@ class CatalogueEntry:
     approx_download_bytes: int
     license: str
     notes_he: str = ""
+    #: Cloud models are transcribed by a remote service; nothing is downloaded
+    #: to disk and the pipeline skips the download/load stages for them.
+    is_cloud: bool = False
 
 
 CATALOGUE: tuple[CatalogueEntry, ...] = (
@@ -69,6 +74,19 @@ CATALOGUE: tuple[CatalogueEntry, ...] = (
         license="Apache-2.0",
         notes_he="קטן ומהיר, לבדיקות בלבד. אינו מומלץ לתמלול עברי אמיתי.",
     ),
+    CatalogueEntry(
+        id=SONIOX_MODEL_ID,
+        label_he="Soniox (תמלול בענן)",
+        hebrew_specialised=True,
+        # Nothing is downloaded — the model runs on Soniox's servers.
+        approx_download_bytes=0,
+        license="שירות מסחרי (ראו soniox.com/pricing)",
+        notes_he=(
+            "תמלול עברי מדויק דרך שירות הענן של Soniox. דורש מפתח API, "
+            "ושולח את האודיו לשרתים שלהם."
+        ),
+        is_cloud=True,
+    ),
 )
 
 _BY_ID = {entry.id: entry for entry in CATALOGUE}
@@ -94,8 +112,11 @@ def is_downloaded(model_id: str, cache_dir: Path) -> bool:
     """True when the repo has at least one materialised snapshot.
 
     Checked structurally rather than by calling the Hub, so this works with no
-    network connection.
+    network connection. Cloud models are always "downloaded" — there is nothing
+    to put on disk.
     """
+    if get_entry(model_id).is_cloud:
+        return True
     snapshots = _hub_dir(cache_dir, model_id) / "snapshots"
     if not snapshots.is_dir():
         return False
@@ -133,10 +154,11 @@ def list_models(settings: Settings) -> list[ModelInfo]:
             label_he=entry.label_he,
             hebrew_specialised=entry.hebrew_specialised,
             approx_download_bytes=entry.approx_download_bytes,
-            downloaded=is_downloaded(entry.id, cache),
-            cache_path=str(_hub_dir(cache, entry.id)),
+            downloaded=True if entry.is_cloud else is_downloaded(entry.id, cache),
+            cache_path="" if entry.is_cloud else str(_hub_dir(cache, entry.id)),
             license=entry.license,
             notes_he=entry.notes_he,
+            is_cloud=entry.is_cloud,
         )
         for entry in CATALOGUE
     ]
@@ -146,7 +168,9 @@ def delete_model(model_id: str, settings: Settings) -> int:
     """Remove a downloaded model. Returns bytes reclaimed."""
     import shutil
 
-    get_entry(model_id)  # validates the id
+    entry = get_entry(model_id)  # validates the id
+    if entry.is_cloud:
+        return 0
     target = _hub_dir(settings.model_cache_dir, model_id)
     if not target.exists():
         return 0
@@ -167,7 +191,12 @@ def download_model(
     Only ever called from an explicit user action, after the UI has shown the
     approximate size and the destination folder.
     """
-    get_entry(model_id)
+    entry = get_entry(model_id)
+    if entry.is_cloud:
+        raise ModelError(
+            f"{model_id!r} is a cloud model and needs no download",
+            code=ErrorCode.INVALID_REQUEST,
+        )
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
@@ -204,11 +233,12 @@ def use_mock_backend() -> bool:
 class ModelManager:
     """Holds at most one loaded transcriber and reuses it across jobs."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, credentials: SonioxCredentials | None = None) -> None:
         self._settings = settings
+        self._credentials = credentials
         self._lock = threading.Lock()
         self._transcriber: Transcriber | None = None
-        self._key: tuple[str, str, bool, int, bool] | None = None
+        self._key: tuple[object, ...] | None = None
 
     @property
     def loaded_model_id(self) -> str | None:
@@ -223,6 +253,10 @@ class ModelManager:
                     self._transcriber = MockTranscriber(MOCK_MODEL_ID)
                     self._key = (MOCK_MODEL_ID, "cpu", False, 1, False)
                 return self._transcriber
+
+        entry = get_entry(settings.model_id)
+        if entry.is_cloud:
+            return self._acquire_cloud(entry)
 
         resolved = self._resolve(settings)
         key = (
@@ -239,7 +273,6 @@ class ModelManager:
             # Different configuration: free the old weights before allocating.
             self._release_locked()
 
-            entry = get_entry(settings.model_id)
             downloaded = is_downloaded(entry.id, self._settings.model_cache_dir)
             if not downloaded:
                 raise ModelError(
@@ -265,6 +298,27 @@ class ModelManager:
             )
             self._key = key
             return self._transcriber
+
+    def _acquire_cloud(self, entry: CatalogueEntry) -> Transcriber:
+        api_key = self._api_key()
+        key = (entry.id, "cloud", api_key)
+        with self._lock:
+            if self._transcriber is not None and self._key == key:
+                return self._transcriber
+            self._release_locked()
+            self._transcriber = SonioxTranscriber(api_key, model_id=entry.id)
+            self._key = key
+            return self._transcriber
+
+    def _api_key(self) -> str:
+        credentials = self._credentials or SonioxCredentials(self._settings)
+        api_key = credentials.get()
+        if not api_key:
+            raise ModelError(
+                "the Soniox API key has not been configured",
+                code=ErrorCode.SONIOX_KEY_MISSING,
+            )
+        return api_key
 
     def _resolve(self, settings: TranscriptionSettings) -> ResolvedDevice:
         return resolve_device(

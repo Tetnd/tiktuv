@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,7 +13,7 @@ from ..exports import SUPPORTED_FORMATS, export_transcript
 from ..logging_conf import get_logger
 from ..schemas import ExportFormat, ExportRequest, ExportResult, JobStatus
 from ..security import validate_output_dir
-from .deps import AuthDep, StateDep
+from .deps import AuthDep, StateDep, require_token
 
 log = get_logger("api.export")
 
@@ -101,13 +101,26 @@ def export_bulk(
 
 
 @router.get("/exports/download")
-def download_export(path: str, state: StateDep, _auth: AuthDep) -> FileResponse:
+def download_export(path: str, request: Request, state: StateDep) -> FileResponse:
     """Serve a previously generated export file.
 
     ``path`` is confined to the exports directory. Anything else — a traversal
     attempt, a symlink out, an absolute path elsewhere on the disk — is
     rejected before the file is opened.
+
+    A plain ``<a download>`` cannot send headers, so the session token is also
+    accepted as a query parameter, exactly like the media and SSE endpoints.
     """
+    token = request.query_params.get("token")
+    if token:
+        require_token(request, authorization=f"Bearer {token}", x_tiktuv_token=None)
+    else:
+        require_token(
+            request,
+            authorization=request.headers.get("authorization"),
+            x_tiktuv_token=request.headers.get("x-tiktuv-token"),
+        )
+
     from ..security import resolve_within
 
     resolved = resolve_within(path, [state.settings.exports_dir.resolve()])

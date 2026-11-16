@@ -19,6 +19,9 @@ apps/frontend/.env.local
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/binaries/
 
+# Rust / gpui-kit native shell
+apps/desktop-gpui/target/
+
 # Local data — never commit recordings, transcripts or models
 data/
 samples/*.mp3

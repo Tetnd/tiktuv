@@ -31,6 +31,12 @@ class ErrorCode(StrEnum):
     MODEL_DOWNLOAD_FAILED = "MODEL_DOWNLOAD_FAILED"
     ASR_BACKEND_MISSING = "ASR_BACKEND_MISSING"
     UNKNOWN_MODEL = "UNKNOWN_MODEL"
+    # Cloud ASR (Soniox)
+    SONIOX_KEY_MISSING = "SONIOX_KEY_MISSING"
+    SONIOX_API_ERROR = "SONIOX_API_ERROR"
+    # AI analysis (DeepSeek)
+    DEEPSEEK_KEY_MISSING = "DEEPSEEK_KEY_MISSING"
+    DEEPSEEK_API_ERROR = "DEEPSEEK_API_ERROR"
     # Jobs
     JOB_NOT_FOUND = "JOB_NOT_FOUND"
     JOB_CANCELLED = "JOB_CANCELLED"
@@ -107,6 +113,22 @@ MESSAGES_HE: dict[ErrorCode, tuple[str, str]] = {
         "התקינו את חבילות ה-ASR: pip install -e apps/backend[asr]",
     ),
     ErrorCode.UNKNOWN_MODEL: ("המודל המבוקש אינו מוכר.", "בחרו מודל מהרשימה."),
+    ErrorCode.SONIOX_KEY_MISSING: (
+        "מפתח ה-API של Soniox אינו מוגדר.",
+        "הגדירו אותו בכרטיסיית 'מערכת ומודלים' לפני תמלול דרך Soniox.",
+    ),
+    ErrorCode.SONIOX_API_ERROR: (
+        "התמלול דרך שירות Soniox נכשל.",
+        "בדקו את מפתח ה-API, את החיבור לאינטרנט ואת יתרת החשבון, ונסו שוב.",
+    ),
+    ErrorCode.DEEPSEEK_KEY_MISSING: (
+        "מפתח ה-API של DeepSeek אינו מוגדר.",
+        "הגדירו אותו בכרטיסיית 'מערכת ומודלים' לפני יצירת ניתוח.",
+    ),
+    ErrorCode.DEEPSEEK_API_ERROR: (
+        "יצירת הניתוח נכשלה.",
+        "בדקו את מפתח ה-API, את החיבור לאינטרנט ואת יתרת החשבון, ונסו שוב.",
+    ),
     ErrorCode.JOB_NOT_FOUND: ("העבודה לא נמצאה.", "רעננו את רשימת העבודות."),
     ErrorCode.JOB_CANCELLED: ("העבודה בוטלה.", "ניתן להריץ אותה מחדש מההיסטוריה."),
     ErrorCode.JOB_INVALID_STATE: (
@@ -136,6 +158,10 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.JOB_NOT_FOUND: 404,
     ErrorCode.TRANSCRIPT_NOT_FOUND: 404,
     ErrorCode.UNKNOWN_MODEL: 404,
+    ErrorCode.SONIOX_KEY_MISSING: 422,
+    ErrorCode.SONIOX_API_ERROR: 502,
+    ErrorCode.DEEPSEEK_KEY_MISSING: 422,
+    ErrorCode.DEEPSEEK_API_ERROR: 502,
     ErrorCode.JOB_INVALID_STATE: 409,
     ErrorCode.MEDIA_TOO_LARGE: 413,
     ErrorCode.UNSUPPORTED_FORMAT: 415,

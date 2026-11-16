@@ -1,9 +1,9 @@
 /** First-run preflight, model management, storage and privacy controls. */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { formatBytes } from '@/lib/format';
-import { StatusPill } from '@/components/ui/Primitives';
-import { api } from '@/lib/api';
+import { Field, StatusPill } from '@/components/ui/Primitives';
+import { api, ApiError } from '@/lib/api';
 import { useStore } from '@/state/store';
 
 export function PreflightPanel() {
@@ -223,11 +223,216 @@ function StoragePanel() {
 }
 
 export function SystemScreen() {
+  const system = useStore((s) => s.system);
+  const refreshSystem = useStore((s) => s.refreshSystem);
+
+  // System info is fetched lazily: it imports PyTorch on the backend, which is
+  // a multi-second stall we do not want while the app is first opening.
+  useEffect(() => {
+    if (system === null) void refreshSystem();
+  }, [system, refreshSystem]);
+
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-6">
+      <SonioxPanel />
+      <DeepSeekPanel />
       <PreflightPanel />
       <ModelsPanel />
       <StoragePanel />
     </div>
+  );
+}
+
+function DeepSeekPanel() {
+  const pushToast = useStore((s) => s.pushToast);
+  const [key, setKey] = useState('');
+  const [status, setStatus] = useState<{ configured: boolean; masked_key: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void api.deepseekStatus().then(setStatus).catch(() => undefined);
+  }, []);
+
+  const save = async () => {
+    const trimmed = key.trim();
+    if (!trimmed) return;
+    setBusy(true);
+    try {
+      setStatus(await api.setDeepseekKey(trimmed));
+      setKey('');
+      pushToast({ tone: 'success', title: 'מפתח ה-API נשמר.' });
+    } catch (error) {
+      const detail = error instanceof ApiError ? error.messageHe : undefined;
+      pushToast({ tone: 'error', title: 'שמירת המפתח נכשלה.', detail });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clear = async () => {
+    setBusy(true);
+    try {
+      setStatus(await api.clearDeepseekKey());
+      pushToast({ tone: 'info', title: 'מפתח ה-API הוסר.' });
+    } catch {
+      pushToast({ tone: 'error', title: 'הסרת המפתח נכשלה.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card p-4" aria-labelledby="deepseek-heading">
+      <h2 id="deepseek-heading" className="mb-2 text-base font-semibold text-ink-800">
+        DeepSeek (ניתוח AI)
+      </h2>
+      <p className="mb-3 text-sm text-ink-600">
+        מנוע ה-AI שמפיק את תקציר, נקודות המפתח, המשימות, הישויות וניתוח הדוברים.
+        התמליל נשלח ל-DeepSeek רק בעת יצירת ניתוח.
+      </p>
+
+      {status?.configured ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-sm text-ink-700">
+            מפתח מוגדר:{' '}
+            <span className="numeric ltr-run font-mono">{status.masked_key}</span>
+          </span>
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={busy}
+            onClick={() => void clear()}
+          >
+            הסרת מפתח
+          </button>
+        </div>
+      ) : (
+        <div className="grid gap-3">
+          <Field label="מפתח API" htmlFor="deepseek-key">
+            <input
+              id="deepseek-key"
+              type="password"
+              className="field-input ltr-run"
+              value={key}
+              onChange={(event) => setKey(event.target.value)}
+              placeholder="DeepSeek API key"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </Field>
+          <div>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={busy || !key.trim()}
+              onClick={() => void save()}
+            >
+              שמירה
+            </button>
+          </div>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs text-ink-500">
+        המפתח נשמר מקומית בתיקיית הנתונים של היישום בלבד.
+      </p>
+    </section>
+  );
+}
+
+function SonioxPanel() {
+  const pushToast = useStore((s) => s.pushToast);
+  const [key, setKey] = useState('');
+  const [status, setStatus] = useState<{ configured: boolean; masked_key: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void api.sonioxStatus().then(setStatus).catch(() => undefined);
+  }, []);
+
+  const save = async () => {
+    const trimmed = key.trim();
+    if (!trimmed) return;
+    setBusy(true);
+    try {
+      setStatus(await api.setSonioxKey(trimmed));
+      setKey('');
+      pushToast({ tone: 'success', title: 'מפתח ה-API נשמר.' });
+    } catch (error) {
+      const detail = error instanceof ApiError ? error.messageHe : undefined;
+      pushToast({ tone: 'error', title: 'שמירת המפתח נכשלה.', detail });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clear = async () => {
+    setBusy(true);
+    try {
+      setStatus(await api.clearSonioxKey());
+      pushToast({ tone: 'info', title: 'מפתח ה-API הוסר.' });
+    } catch {
+      pushToast({ tone: 'error', title: 'הסרת המפתח נכשלה.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card p-4" aria-labelledby="soniox-heading">
+      <h2 id="soniox-heading" className="mb-2 text-base font-semibold text-ink-800">
+        Soniox (תמלול בענן)
+      </h2>
+      <p className="mb-3 text-sm text-ink-600">
+        תמלול עברי מדויק דרך שירות הענן של Soniox. כדי להשתמש בו, בחרו את המודל
+        "Soniox" בהגדרות התמלול. שימו לב: האודיו נשלח לשרתים של Soniox.
+      </p>
+
+      {status?.configured ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-sm text-ink-700">
+            מפתח מוגדר:{' '}
+            <span className="numeric ltr-run font-mono">{status.masked_key}</span>
+          </span>
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={busy}
+            onClick={() => void clear()}
+          >
+            הסרת מפתח
+          </button>
+        </div>
+      ) : (
+        <div className="grid gap-3">
+          <Field label="מפתח API" htmlFor="soniox-key">
+            <input
+              id="soniox-key"
+              type="password"
+              className="field-input ltr-run"
+              value={key}
+              onChange={(event) => setKey(event.target.value)}
+              placeholder="Soniox API key"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </Field>
+          <div>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={busy || !key.trim()}
+              onClick={() => void save()}
+            >
+              שמירה
+            </button>
+          </div>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs text-ink-500">
+        המפתח נשמר מקומית בתיקיית הנתונים של היישום בלבד.
+      </p>
+    </section>
   );
 }

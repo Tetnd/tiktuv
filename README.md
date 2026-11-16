@@ -66,6 +66,16 @@ they are missing, sets up an isolated environment, picks the right PyTorch
 build for the hardware, builds the interface, and puts a **Tiktuv** icon on the
 Desktop. Re-running it is safe — finished steps are skipped.
 
+### Running it from a folder, with nothing installed
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-portable.ps1 -IncludeModel -Zip
+```
+
+Produces a self-contained folder that runs on any Windows 10/11 machine with no
+setup, no Python and no registry entries, from any path or drive letter — a USB
+stick included. See [docs/portable.md](docs/portable.md).
+
 ### Giving it to someone
 
 ```bash
@@ -273,6 +283,7 @@ with a live progress bar, and queues it for transcription like any dropped file.
 | Document | Contents |
 |---|---|
 | [docs/installation.md](docs/installation.md) | End-user install, first run, model download |
+| [docs/portable.md](docs/portable.md) | The no-install portable folder, and how it stays path-independent |
 | [docs/windows-dev-setup.md](docs/windows-dev-setup.md) | Developer setup on Windows 10/11 |
 | [docs/gpu-cuda-setup.md](docs/gpu-cuda-setup.md) | CUDA, drivers, FP16, VRAM sizing |
 | [docs/cpu-only-setup.md](docs/cpu-only-setup.md) | Running without a GPU |
@@ -309,7 +320,7 @@ Be precise about what has and has not been exercised.
 
 **Verified by running it:**
 
-- 464 backend tests + 5 skipped (`pytest`), 150 frontend tests (`vitest`)
+- 482 backend tests + 5 skipped (`pytest`), 150 frontend tests (`vitest`)
 - `ruff` clean, `mypy --strict` clean across 54 backend modules
 - Frontend type-check, lint and production build clean
 - End-to-end smoke test: 31 checks against a real backend process — Hebrew
@@ -327,6 +338,10 @@ Be precise about what has and has not been exercised.
   across jobs (`scripts\smoke-test.ps1 -Real` — 31/31)
 - **The desktop app**: shortcut launches the backend, opens a dedicated window,
   serves the UI with an injected session token, and shuts down on close
+- **The portable build**, run from a different drive letter than it was built
+  at: it started, served the UI, resolved the bundled FFmpeg, opened its window
+  with the right icon, and kept every file inside its own folder
+  ([docs/portable.md](docs/portable.md))
 
 **Not verified here, and you should not assume it works until you check:**
 
@@ -339,8 +354,11 @@ Be precise about what has and has not been exercised.
 - **Zoom passcode-protected links.** Link resolution, streaming download,
   progress and cancellation are verified against a real recording; the passcode
   submission path is not.
+- **The portable build on a machine that has never had Python, Tiktuv or the
+  WebView2 runtime installed.** Everything is bundled and no host state is
+  read, but that is reasoning, not a test.
 - **The Tauri MSI/NSIS installer.** No Rust toolchain here, so
-  `scriptsuild-windows.ps1` has not been run end to end. The desktop-shortcut
+  `scripts\build-windows.ps1` has not been run end to end. The desktop-shortcut
   route (`scripts\install-desktop.ps1`) is what was verified.
 
 [docs/release-checklist.md](docs/release-checklist.md) is the list to work

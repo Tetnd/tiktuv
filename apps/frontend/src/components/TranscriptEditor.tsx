@@ -7,13 +7,19 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Segment } from '@shared/index';
-import { api } from '@/lib/api';
+import type { Segment, TranscriptAnalysis } from '@shared/index';
+import { api, ApiError } from '@/lib/api';
 import { formatClock, truncateMiddle } from '@/lib/format';
 import { Numeric } from '@/components/ui/Primitives';
 import { MediaPlayer, type PlayerHandle } from '@/components/MediaPlayer';
 import { ExportDialog } from '@/components/ExportDialog';
 import { TranscriptSearch, type SearchOptions } from '@/components/TranscriptSearch';
+import {
+  AnalysisBody,
+  ANALYSIS_TABS,
+  type AnalysisState,
+  type AnalysisTab,
+} from '@/components/AnalysisPanel';
 import { findMatches, replaceAllMatches, replaceMatch, stepMatch } from '@/lib/search';
 import { useStore } from '@/state/store';
 
@@ -44,6 +50,7 @@ export function TranscriptEditor() {
   const jobs = useStore((s) => s.jobs);
   const saveTranscript = useStore((s) => s.saveTranscript);
   const closeTranscript = useStore((s) => s.closeTranscript);
+  const refreshJobs = useStore((s) => s.refreshJobs);
   const pushToast = useStore((s) => s.pushToast);
 
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -60,6 +67,11 @@ export function TranscriptEditor() {
   const [matchIndex, setMatchIndex] = useState(0);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [exportOpen, setExportOpen] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [tab, setTab] = useState<'transcript' | AnalysisTab>('transcript');
+  const [analysis, setAnalysis] = useState<TranscriptAnalysis | null>(null);
+  const [analysisState, setAnalysisState] = useState<AnalysisState>('idle');
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   const playerRef = useRef<PlayerHandle>(null);
   //: segment id -> its textarea, so a match can be scrolled to and selected.
@@ -191,6 +203,82 @@ export function TranscriptEditor() {
     }
   };
 
+  const downloadPdf = async () => {
+    if (!transcript || !activeJobId) return;
+    setPdfBusy(true);
+    // Persist any unsaved edits first, so the PDF reflects what is on screen.
+    try {
+      await api.saveTranscript(activeJobId, segments, speakers);
+      dirty.current = false;
+      setSaveState('saved');
+    } catch {
+      setSaveState('error');
+      setPdfBusy(false);
+      pushToast({ tone: 'error', title: 'השמירה נכשלה. ה-PDF לא נוצר.' });
+      return;
+    }
+
+    try {
+      const result = await api.exportJob(activeJobId, ['pdf'], null);
+      const pdf = result.results.find((entry) => entry.format === 'pdf');
+      if (!pdf) {
+        pushToast({ tone: 'error', title: 'יצירת ה-PDF נכשלה.' });
+        return;
+      }
+      const stem = (job?.filename ?? 'תמליל').replace(/\.[^.]+$/, '');
+      const anchor = document.createElement('a');
+      anchor.href = api.downloadUrl(pdf.path);
+      anchor.download = `${stem}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      pushToast({ tone: 'success', title: 'ה-PDF הורד.' });
+      await refreshJobs();
+    } catch (error) {
+      const detail = error instanceof ApiError ? error.messageHe : undefined;
+      pushToast({ tone: 'error', title: 'יצירת ה-PDF נכשלה.', detail });
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
+  const loadAnalysis = useCallback(
+    async (force: boolean) => {
+      if (!activeJobId) return;
+      setAnalysisState('loading');
+      setAnalysisError(null);
+      try {
+        let result: TranscriptAnalysis;
+        if (force) {
+          result = await api.createAnalysis(activeJobId);
+        } else {
+          try {
+            result = await api.getAnalysis(activeJobId);
+          } catch (error) {
+            if (error instanceof ApiError && error.status === 404) {
+              // Not generated yet — generate it now.
+              result = await api.createAnalysis(activeJobId);
+            } else {
+              throw error;
+            }
+          }
+        }
+        setAnalysis(result);
+        setAnalysisState('ready');
+      } catch (error) {
+        setAnalysisError(error instanceof ApiError ? error.messageHe : String(error));
+        setAnalysisState('error');
+      }
+    },
+    [activeJobId],
+  );
+
+  useEffect(() => {
+    if (tab !== 'transcript' && analysisState === 'idle') {
+      void loadAnalysis(false);
+    }
+  }, [tab, analysisState, loadAnalysis]);
+
   // -- search ------------------------------------------------------------
   const matches = useMemo(
     () => findMatches(segments, findText, searchOptions),
@@ -321,6 +409,14 @@ export function TranscriptEditor() {
           <button type="button" className="btn-secondary" onClick={() => void copyAll()}>
             העתק הכול
           </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={pdfBusy}
+            onClick={() => void downloadPdf()}
+          >
+            {pdfBusy ? 'מייצא…' : 'הורדת PDF'}
+          </button>
           <button type="button" className="btn-primary" onClick={() => setExportOpen(true)}>
             ייצוא
           </button>
@@ -330,7 +426,35 @@ export function TranscriptEditor() {
         </div>
       </header>
 
-      <MediaPlayer
+      <nav aria-label="תצוגות תמליל" className="flex flex-wrap gap-1 border-b border-ink-200 pb-2">
+        <button
+          type="button"
+          aria-current={tab === 'transcript' ? 'page' : undefined}
+          onClick={() => setTab('transcript')}
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+            tab === 'transcript' ? 'bg-brand-50 text-brand-700' : 'text-ink-600 hover:bg-ink-100'
+          }`}
+        >
+          תמלול
+        </button>
+        {ANALYSIS_TABS.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            aria-current={tab === entry.id ? 'page' : undefined}
+            onClick={() => setTab(entry.id)}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+              tab === entry.id ? 'bg-brand-50 text-brand-700' : 'text-ink-600 hover:bg-ink-100'
+            }`}
+          >
+            {entry.label}
+          </button>
+        ))}
+      </nav>
+
+      {tab === 'transcript' ? (
+        <>
+          <MediaPlayer
         ref={playerRef}
         src={api.mediaUrl(activeJobId)}
         hasVideo={Boolean(job?.filename?.match(/\.(mp4|mov|mkv|webm)$/i))}
@@ -403,21 +527,39 @@ export function TranscriptEditor() {
                 {formatClock(segment.start)}
               </button>
 
-              <textarea
-                ref={(node) => {
-                  if (node) textareaRefs.current.set(segment.id, node);
-                  else textareaRefs.current.delete(segment.id);
-                }}
-                aria-label={`מקטע ${index + 1}`}
-                className="min-h-[52px] w-full resize-y rounded-lg border border-transparent bg-transparent p-2 text-[15px] leading-relaxed text-ink-900 outline-none focus:border-brand-400 focus:bg-white"
-                value={segment.text}
-                onChange={(event) => editSegment(index, event.target.value)}
-                rows={Math.max(1, Math.ceil(segment.text.length / 90))}
-              />
+              <div className="min-w-0 flex-1">
+                {segment.speaker && (
+                  <span className="mb-1 inline-block rounded bg-brand-50 px-1.5 py-0.5 text-xs font-medium text-brand-700">
+                    {speakers[segment.speaker] ?? segment.speaker}
+                  </span>
+                )}
+                <textarea
+                  ref={(node) => {
+                    if (node) textareaRefs.current.set(segment.id, node);
+                    else textareaRefs.current.delete(segment.id);
+                  }}
+                  aria-label={`מקטע ${index + 1}`}
+                  className="min-h-[52px] w-full resize-y rounded-lg border border-transparent bg-transparent p-2 text-[15px] leading-relaxed text-ink-900 outline-none focus:border-brand-400 focus:bg-white"
+                  value={segment.text}
+                  onChange={(event) => editSegment(index, event.target.value)}
+                  rows={Math.max(1, Math.ceil(segment.text.length / 90))}
+                />
+              </div>
             </li>
           );
         })}
       </ol>
+        </>
+      ) : (
+        <AnalysisBody
+          tab={tab}
+          analysis={analysis}
+          state={analysisState}
+          error={analysisError}
+          onRetry={() => void loadAnalysis(false)}
+          onRegenerate={() => void loadAnalysis(true)}
+        />
+      )}
 
       {exportOpen && (
         <ExportDialog jobId={activeJobId} onClose={() => setExportOpen(false)} />

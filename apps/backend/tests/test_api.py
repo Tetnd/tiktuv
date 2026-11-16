@@ -149,6 +149,12 @@ class TestModels:
 
     def test_download_size_and_location_are_disclosed(self, client: TestClient) -> None:
         for model in client.get("/api/models").json():
+            if model["approx_download_bytes"] == 0:
+                # Cloud models (Soniox) have nothing to download, so they
+                # disclose no download size and no local cache path.
+                assert model["downloaded"] is True
+                assert model["cache_path"] == ""
+                continue
             assert model["approx_download_bytes"] > 0
             assert model["cache_path"]
 
@@ -495,6 +501,27 @@ class TestExportApi:
         ).json()["results"][0]
 
         response = client.get("/api/exports/download", params={"path": result["path"]})
+        assert response.status_code == 200
+        assert response.content
+
+    def test_download_accepts_token_as_query_parameter(
+        self,
+        client: TestClient,
+        unauthenticated_client: TestClient,
+        sample_mp3: Path,
+        settings: Settings,
+    ) -> None:
+        """A plain ``<a download>`` link sends no headers, so the token must
+        also be accepted as a query parameter."""
+        job_id = self._completed_job(client, sample_mp3)
+        result = client.post(
+            f"/api/jobs/{job_id}/export", json={"formats": ["txt"]}
+        ).json()["results"][0]
+
+        response = unauthenticated_client.get(
+            "/api/exports/download",
+            params={"path": result["path"], "token": settings.auth_token},
+        )
         assert response.status_code == 200
         assert response.content
 

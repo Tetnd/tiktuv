@@ -7,6 +7,7 @@
  */
 
 import type {
+  DeepSeekStatus,
   ExportFormat,
   ExportResponse,
   ImportedMedia,
@@ -14,9 +15,11 @@ import type {
   JobSummary,
   ModelDownloadStatus,
   ModelInfo,
+  SonioxStatus,
   StorageUsage,
   SystemInfo,
   Transcript,
+  TranscriptAnalysis,
   TranscriptionSettings,
   UrlFetchStatus,
   Segment,
@@ -173,6 +176,18 @@ export const api = {
   deleteModel: (modelId: string) =>
     request<{ reclaimed_bytes: number }>(`/api/models/${modelId}`, { method: 'DELETE' }),
 
+  // -- Soniox (cloud ASR) ------------------------------------------------
+  sonioxStatus: () => request<SonioxStatus>('/api/soniox/status'),
+  setSonioxKey: (apiKey: string) =>
+    request<SonioxStatus>('/api/soniox/key', { method: 'PUT', ...json({ api_key: apiKey }) }),
+  clearSonioxKey: () => request<SonioxStatus>('/api/soniox/key', { method: 'DELETE' }),
+
+  // -- DeepSeek (AI analysis) --------------------------------------------
+  deepseekStatus: () => request<DeepSeekStatus>('/api/deepseek/status'),
+  setDeepseekKey: (apiKey: string) =>
+    request<DeepSeekStatus>('/api/deepseek/key', { method: 'PUT', ...json({ api_key: apiKey }) }),
+  clearDeepseekKey: () => request<DeepSeekStatus>('/api/deepseek/key', { method: 'DELETE' }),
+
   // -- media -------------------------------------------------------------
   importMedia: (path: string) =>
     request<ImportedMedia>('/api/media/import', { method: 'POST', ...json({ path }) }),
@@ -221,6 +236,11 @@ export const api = {
       ...json({ segments, speakers: speakers ?? null }),
     }),
 
+  // -- AI analysis -------------------------------------------------------
+  getAnalysis: (id: string) => request<TranscriptAnalysis>(`/api/jobs/${id}/analysis`),
+  createAnalysis: (id: string) =>
+    request<TranscriptAnalysis>(`/api/jobs/${id}/analysis`, { method: 'POST' }),
+
   /** URL for the <audio>/<video> element. The token rides as a query
    *  parameter because media elements cannot send headers. */
   mediaUrl: (id: string) =>
@@ -238,8 +258,10 @@ export const api = {
       '/api/export/bulk',
       { method: 'POST', ...json({ job_ids: jobIds, formats, output_dir: outputDir ?? null }) },
     ),
+  /** URL for downloading a generated export. The token rides as a query
+   *  parameter because plain download links cannot send headers. */
   downloadUrl: (path: string) =>
-    `${runtime.baseUrl}/api/exports/download?path=${encodeURIComponent(path)}`,
+    `${runtime.baseUrl}/api/exports/download?path=${encodeURIComponent(path)}&token=${encodeURIComponent(runtime.token)}`,
 };
 
 export type Api = typeof api;

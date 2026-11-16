@@ -1,0 +1,50 @@
+[package]
+name = "tiktuv-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Tiktuv (תכתוב) native desktop application built on gpui-kit"
+license = "MIT"
+
+[dependencies]
+# The single dependency that brings in GPUI, gpui-base, gpui-component and the
+# default Lucide icon set.
+gpui-kit = "0.10"
+anyhow = "1"
+
+# HTTP client for the local FastAPI backend (loopback HTTP only, no TLS needed).
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+futures-util = "0.3"
+async-channel = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# Native file/folder picker (Windows COM dialog).
+rfd = "0.15"
+
+# Audio playback: rodio (output) + its bundled symphonia decoders (mp3/wav/flac/
+# ogg/m4a/aac, and mp4/mkv containers) cover every media format Tiktuv accepts.
+rodio = { version = "0.20", features = ["symphonia-all"] }
+
+# gpui shapes text left-to-right only, so Hebrew must be reordered into visual
+# order (the Unicode bidi algorithm) before it is handed to the renderer.
+unicode-bidi = "0.3"
+# Mirrors parentheses/brackets in right-to-left runs (bidi reordering alone
+# does not do this, per Rule L4).
+unicode-bidi-mirroring = "0.4"
+
+# Optimize the heavy GUI/text crates even in dev builds, so `cargo run` stays
+# responsive while our own code remains fast to recompile.
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+gpui-pre-macros = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+gpui-kit = { opt-level = 3 }
+gpui-kit-assets = { opt-level = 3 }
+gpui-base = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }

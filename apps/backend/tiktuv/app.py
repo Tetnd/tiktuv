@@ -193,32 +193,61 @@ def wait_until_ready(url: str, *, timeout: float = 90.0) -> bool:
     return False
 
 
-def health_ok(instance: RunningInstance) -> bool:
-    try:
-        with urllib.request.urlopen(f"{instance.base_url}/api/health", timeout=3) as response:
-            return bool(response.status == 200)
-    except (urllib.error.URLError, OSError, TimeoutError):
-        return False
+def health_ok(instance: RunningInstance, *, attempts: int = 1, delay: float = 0.0) -> bool:
+    """Probe ``/api/health``, optionally retrying with a pause between tries.
+
+    A cold start can take several seconds before the loop starts answering, so
+    a single probe is not enough to tell a healthy-but-slow instance from a
+    genuinely hung one. Retrying before declaring it hung avoids killing a live
+    app (and forcing a second, slower launch) after a double-click.
+    """
+    for _ in range(max(1, attempts)):
+        try:
+            with urllib.request.urlopen(f"{instance.base_url}/api/health", timeout=3) as response:
+                if response.status == 200:
+                    return True
+        except (urllib.error.URLError, OSError, TimeoutError):
+            pass
+        if delay:
+            time.sleep(delay)
+    return False
 
 
 def _terminate_pid(pid: int) -> None:
-    """Best-effort kill of a hung previous instance. Never raises."""
+    """Best-effort kill of a hung previous instance. Never raises, and never
+    kills a process that is not provably a Tiktuv instance.
+
+    A stale lock file can carry a PID that the OS has since recycled, so this
+    checks the command line first and skips anything unrelated — killing the
+    wrong process would be far worse than the hang this is meant to clear.
+    """
     if pid <= 0 or pid == os.getpid():
         return
     try:
         import psutil
-
+    except ImportError:  # pragma: no cover - psutil is a hard dependency
+        return
+    try:
         process = psutil.Process(pid)
+        cmdline = " ".join(process.cmdline() or []).lower()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+        # If we cannot inspect it we cannot be sure it is ours, so leave it.
+        log.warning("could not inspect a stale instance; leaving it alone", extra={"pid": pid})
+        return
+    if "tiktuv" not in cmdline:
+        log.warning(
+            "refusing to kill a non-Tiktuv process named by a stale lock",
+            extra={"pid": pid, "cmdline": cmdline},
+        )
+        return
+    try:
         process.terminate()
         try:
             process.wait(timeout=3)
         except psutil.TimeoutExpired:
             process.kill()
-        return
-    except Exception:  # noqa: BLE001 - fall through to os.kill
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):  # pragma: no cover
         pass
-    with contextlib.suppress(OSError, ProcessLookupError, PermissionError):
-        os.kill(pid, 9)
 
 
 def clear_orphaned_webviews(storage_path: Path) -> int:
@@ -350,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     # second backend on the same data directory.
     existing = read_lock(settings)
     if existing is not None:
-        if health_ok(existing):
+        if health_ok(existing, attempts=4, delay=1.5):
             log.info("attaching to the running backend", extra={"port": existing.port})
             opened = open_window(existing.base_url)
             if not opened:
@@ -375,7 +404,12 @@ def main(argv: list[str] | None = None) -> int:
 
     storage_path = settings.data_dir / WEBVIEW_STORAGE_DIRNAME
     storage_path.mkdir(parents=True, exist_ok=True)
-    clear_orphaned_webviews(storage_path)
+    # Clearing orphaned WebView2 hosts enumerates every process on the machine,
+    # so run it in parallel with the backend boot instead of stacking the two.
+    cleanup = threading.Thread(
+        target=clear_orphaned_webviews, args=(storage_path,), daemon=True
+    )
+    cleanup.start()
 
     backend = BackendThread(settings)
     url = f"http://{settings.host}:{settings.port}"
@@ -384,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         if not wait_until_ready(url):
             log.error("the backend did not become ready")
             return 2
+        cleanup.join(timeout=10.0)
         log.info("desktop app ready", extra={"version": __version__, "url": url})
 
         if not open_window(url, storage_path):
