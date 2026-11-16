@@ -46,6 +46,9 @@ fn default_data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("TIKTUV_DATA_DIR") {
         return PathBuf::from(dir);
     }
+    if let Some(dir) = portable_data_dir() {
+        return dir;
+    }
     #[cfg(windows)]
     {
         let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
@@ -63,6 +66,40 @@ fn default_data_dir() -> PathBuf {
                 .unwrap_or_default()
         });
         return PathBuf::from(base).join("Tiktuv");
+    }
+}
+
+/// Directory containing the running executable (the packaged build root when
+/// a frozen backend sidecar sits next to it).
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()?
+        .parent()
+        .map(|path| path.to_path_buf())
+}
+
+/// True when this is a packaged build: a frozen backend sidecar sits next to
+/// the executable, so everything (backend, data, models, FFmpeg) lives beside it.
+fn is_portable() -> bool {
+    exe_dir()
+        .map(|dir| {
+            dir.join(if cfg!(windows) {
+                "tiktuv-backend.exe"
+            } else {
+                "tiktuv-backend"
+            })
+            .is_file()
+        })
+        .unwrap_or(false)
+}
+
+/// Data directory for a packaged build — inside the folder, so the app is
+/// relocatable like the Python portable build.
+fn portable_data_dir() -> Option<PathBuf> {
+    if is_portable() {
+        exe_dir().map(|dir| dir.join("data"))
+    } else {
+        None
     }
 }
 
@@ -102,6 +139,19 @@ impl BackendProcess {
     /// Locate the backend: an explicit `TIKTUV_BACKEND_PATH` override, else the
     /// development virtualenv (`<repo>/.venv/Scripts/python.exe -m tiktuv`).
     fn executable() -> Option<(PathBuf, Vec<String>)> {
+        // Packaged build: a frozen backend sidecar next to this executable.
+        if let Some(dir) = exe_dir() {
+            let sidecar = dir.join(if cfg!(windows) {
+                "tiktuv-backend.exe"
+            } else {
+                "tiktuv-backend"
+            });
+            if sidecar.is_file() {
+                return Some((sidecar, vec![]));
+            }
+        }
+
+        // Development: an explicit override.
         if let Ok(path) = std::env::var("TIKTUV_BACKEND_PATH") {
             let path = PathBuf::from(path);
             if path.is_file() {
@@ -166,6 +216,24 @@ impl BackendProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .stdin(Stdio::null());
+
+        // Packaged build: keep data, models and FFmpeg inside the folder so the
+        // app runs from any path, mirroring the Python portable build.
+        if is_portable() {
+            if let Some(dir) = exe_dir() {
+                command
+                    .env("TIKTUV_DATA_DIR", dir.join("data"))
+                    .env("TIKTUV_MODELS_DIR", dir.join("models"))
+                    .env(
+                        "TIKTUV_FFMPEG_PATH",
+                        dir.join("tools").join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }),
+                    )
+                    .env(
+                        "TIKTUV_FFPROBE_PATH",
+                        dir.join("tools").join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" }),
+                    );
+            }
+        }
 
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
