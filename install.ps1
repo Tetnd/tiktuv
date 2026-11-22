@@ -6,10 +6,10 @@
     Intended for someone who was handed the Tiktuv folder and just wants the
     program. From a clean Windows 10/11 machine it will:
 
-      1. install Python 3.12, Node.js and FFmpeg if they are missing (winget),
+      1. install Python 3.12, Rust and FFmpeg if they are missing (winget),
       2. create an isolated Python environment for Tiktuv,
       3. install PyTorch — the CUDA build if an NVIDIA GPU is present,
-      4. build the user interface,
+      4. compile the desktop application (Rust, release build),
       5. put a Tiktuv icon on the Desktop,
       6. optionally download the Hebrew model (about 6.2 GB).
 
@@ -125,11 +125,12 @@ if ($osVersion.Major -lt 10) {
 Write-Ok "Windows $($osVersion.Major) build $($osVersion.Build)"
 
 $okPython = Install-WithWinget 'Python.Python.3.12' 'Python 3.12' 'python'
-$okNode = Install-WithWinget 'OpenJS.NodeJS.LTS' 'Node.js' 'npm'
+# Rustup installs the toolchain itself on first run, so `cargo` is the probe.
+$okRust = Install-WithWinget 'Rustlang.Rustup' 'Rust' 'cargo'
 $okFfmpeg = Install-WithWinget 'Gyan.FFmpeg' 'FFmpeg' 'ffmpeg'
 
-if (-not $okPython -or -not $okNode) {
-    throw "Cannot continue without Python and Node.js."
+if (-not $okPython -or -not $okRust) {
+    throw "Cannot continue without Python and Rust."
 }
 if (-not $okFfmpeg) {
     Write-Warning "FFmpeg is missing. Tiktuv will start but cannot read media until it is installed."
@@ -139,7 +140,7 @@ $pythonVersion = (python --version 2>&1) -replace 'Python\s+', ''
 if ([version]($pythonVersion -split '\+')[0] -lt [version]'3.12.0') {
     throw "Python 3.12 or newer is required; found $pythonVersion. Install it and re-run."
 }
-Write-Ok "Python $pythonVersion, Node $(node --version)"
+Write-Ok "Python $pythonVersion, $(cargo --version)"
 
 # -- 2. python environment -------------------------------------------------
 Write-Step "Creating the Tiktuv environment"
@@ -205,31 +206,53 @@ if ($hasNvidia) {
 
 # -- 4. Tiktuv itself ------------------------------------------------------
 Write-Step "Installing Tiktuv"
-& $venvPython -m pip install -e "apps/backend[asr,desktop]" --quiet
+& $venvPython -m pip install -e "apps/backend[asr]" --quiet
 if ($LASTEXITCODE -ne 0) { throw "Tiktuv installation failed" }
 & $venvPython -m pip install pillow --quiet
 Write-Ok "backend installed"
 
-# -- 5. user interface -----------------------------------------------------
-Write-Step "Building the interface"
-$distIndex = Join-Path $repoRoot 'apps\frontend\dist\index.html'
-if (Test-Path $distIndex) {
-    Write-Ok "interface already built"
+# -- 5. the application ----------------------------------------------------
+Write-Step "Building the application"
+$appExe = Join-Path $repoRoot 'apps\desktop-gpui\target\release\tiktuv-desktop.exe'
+if (Test-Path $appExe) {
+    Write-Ok "application already built"
 } else {
-    npm --prefix apps/frontend install --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
-    npm --prefix apps/frontend run build
-    if ($LASTEXITCODE -ne 0) { throw "interface build failed" }
-    Write-Ok "interface built"
+    # The first build compiles the GUI stack from source and takes a while.
+    Write-Info "this takes 10-20 minutes the first time"
+    cargo build --release --manifest-path 'apps/desktop-gpui/Cargo.toml'
+    if ($LASTEXITCODE -ne 0) { throw "the application build failed" }
+    if (-not (Test-Path $appExe)) { throw "the build produced no executable at $appExe" }
+    Write-Ok "application built"
 }
 
 # -- 6. shortcut -----------------------------------------------------------
 Write-Step "Creating the Desktop shortcut"
-# Called with explicit switches: splatting an *array* passes "-StartMenu" as a
-# positional value rather than a parameter name, which the target script has no
-# slot for.
-& (Join-Path $repoRoot 'scripts\install-desktop.ps1') -StartMenu -SkipModelPrompt
-if ($LASTEXITCODE -ne 0) { throw "could not create the shortcut" }
+# The icon is generated from a font glyph rather than committed as a binary.
+$iconPath = Join-Path $repoRoot 'apps\desktop-gpui\assets\icon.ico'
+if (-not (Test-Path $iconPath)) {
+    & $venvPython (Join-Path $repoRoot 'scripts\make-icon.py') | Out-Null
+}
+
+<#
+    The shortcut points straight at the compiled exe. Its working directory is
+    the repository, which is how the app finds .venv and starts the backend
+    from a source checkout (see apps/desktop-gpui/src/backend.rs).
+#>
+function New-TiktuvShortcut([string]$path) {
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($path)
+    $shortcut.TargetPath = $appExe
+    $shortcut.WorkingDirectory = $repoRoot
+    if (Test-Path $iconPath) { $shortcut.IconLocation = "$iconPath,0" }
+    $shortcut.Description = 'Tiktuv - local Hebrew transcription'
+    $shortcut.WindowStyle = 1
+    $shortcut.Save()
+}
+
+New-TiktuvShortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Tiktuv.lnk')
+$startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+if (Test-Path $startMenu) { New-TiktuvShortcut (Join-Path $startMenu 'Tiktuv.lnk') }
+Write-Ok "shortcut created"
 
 # -- 7. the model ----------------------------------------------------------
 Write-Step "Hebrew transcription model"

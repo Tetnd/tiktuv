@@ -238,8 +238,54 @@ class DocxExporter:
             stamp_run.font.color.rgb = RGBColor(0x60, 0x60, 0x60)
 
 
+def write_simple_docx(
+    path: Path,
+    *,
+    title: str,
+    meta: list[str],
+    blocks: list[tuple[str | None, list[str]]],
+) -> Path:
+    """Write a plain right-to-left DOCX made of headings and paragraphs.
+
+    Used by the analysis exports, which have no timeline and therefore need
+    none of the transcript exporter's segment or timestamp machinery — just
+    the same RTL document setup, so Word opens them right-aligned.
+    """
+    try:
+        document = Document()
+    except Exception as exc:  # noqa: BLE001 - python-docx raises broadly
+        raise ExportError(f"could not create DOCX document: {exc}") from exc
+
+    for section in document.sections:
+        set_section_rtl(section)
+
+    normal = document.styles["Normal"]
+    normal.font.name = HEBREW_ASCII_FONT
+    normal.font.size = Pt(BODY_SIZE_PT)
+    _set(normal.element.get_or_add_pPr(), "w:bidi")
+
+    add_rtl_paragraph(document, title, style="Title", size_pt=20, bold=True)
+    for line in meta:
+        add_rtl_paragraph(document, line, size_pt=10, color=RGBColor(0x60, 0x60, 0x60))
+    add_rtl_paragraph(document, "")
+
+    for heading, lines in blocks:
+        if heading:
+            add_rtl_paragraph(document, heading, size_pt=13, bold=True)
+        for line in lines:
+            add_rtl_paragraph(document, line)
+        add_rtl_paragraph(document, "")
+
+    try:
+        document.save(str(path))
+    except OSError as exc:
+        raise ExportError(f"could not write {path.name}: {exc}") from exc
+    return path
+
+
 __all__ = [
     "DocxExporter",
+    "write_simple_docx",
     "add_rtl_paragraph",
     "set_paragraph_rtl",
     "set_run_rtl",

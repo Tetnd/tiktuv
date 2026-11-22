@@ -84,7 +84,12 @@ def build_state(settings: Settings, bus: EventBus) -> AppState:
     )
 
     pipeline = TranscriptionPipeline(
-        settings, models, transcripts, tools=tools, downloader=downloader
+        settings,
+        models,
+        transcripts,
+        tools=tools,
+        downloader=downloader,
+        deepseek=deepseek,
     )
     job_queue = JobQueue(settings, jobs, transcripts, models, bus, pipeline=pipeline)
 

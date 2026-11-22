@@ -1,8 +1,8 @@
 """Backend entry point.
 
-Started by the Tauri shell (or by hand during development). On startup it
+Started by the desktop app (or by hand during development). On startup it
 writes a handshake file containing the port and the random session token, so
-the desktop shell can reach the API without either side hard-coding a secret.
+the desktop app can reach the API without either side hard-coding a secret.
 """
 
 from __future__ import annotations

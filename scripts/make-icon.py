@@ -1,7 +1,8 @@
 """Generate the Tiktuv application icon.
 
-Produces a multi-resolution .ico (and a .png for the web favicon): a rounded
-brand-blue tile with a white Hebrew letter tav — the initial of תכתוב.
+Produces a multi-resolution .ico: a rounded brand-blue tile with a white
+Hebrew letter tav — the initial of תכתוב. The Desktop shortcut created by
+install.ps1 uses it; the gpui window and the exe do not embed an icon yet.
 
 Run from the repository root:
 
@@ -19,9 +20,7 @@ except ImportError:  # pragma: no cover - guidance, not logic
     sys.exit("Pillow is required: .venv\\Scripts\\python.exe -m pip install pillow")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ICON_DIR = REPO_ROOT / "apps" / "desktop" / "src-tauri" / "icons"
-DIST_DIR = REPO_ROOT / "apps" / "frontend" / "dist"
-PUBLIC_DIR = REPO_ROOT / "apps" / "frontend" / "public"
+ICON_DIR = REPO_ROOT / "apps" / "desktop-gpui" / "assets"
 
 #: Rendered large, then downsampled — far cleaner edges than drawing small.
 CANVAS = 1024
@@ -90,20 +89,6 @@ def main() -> int:
     ico_path = ICON_DIR / "icon.ico"
     image.save(ico_path, format="ICO", sizes=[(s, s) for s in ICO_SIZES])
     print(f"wrote {ico_path}")
-
-    # Tauri's bundler expects these exact PNG names alongside the .ico.
-    for size, name in ((32, "32x32.png"), (128, "128x128.png"), (256, "128x128@2x.png")):
-        target = ICON_DIR / name
-        image.resize((size, size), Image.LANCZOS).save(target, format="PNG")
-        print(f"wrote {target}")
-
-    # Favicon for the browser-window launcher.
-    for directory in (PUBLIC_DIR, DIST_DIR):
-        if directory.parent.is_dir():
-            directory.mkdir(parents=True, exist_ok=True)
-            favicon = directory / "favicon.ico"
-            image.save(favicon, format="ICO", sizes=[(s, s) for s in (16, 32, 48, 64)])
-            print(f"wrote {favicon}")
 
     return 0
 

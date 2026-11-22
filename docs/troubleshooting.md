@@ -106,9 +106,9 @@ breakdown on the same screen.
 
 ### `UNAUTHORIZED` — גישה נדחתה
 
-The session token is regenerated on every backend start. If the frontend is
-holding an old one, restart the app. In `vite dev`, `scripts/dev.ps1` rewrites
-`apps/frontend/.env.local` each run — restart Vite so it re-reads it.
+The session token is regenerated on every backend start. If the app is holding
+an old one, restart it. When you start the backend by hand, the current token
+is in the handshake file named on the `TIKTUV_READY` line.
 
 ### `PATH_NOT_ALLOWED` — הנתיב אינו מורשה
 
@@ -218,7 +218,7 @@ If the link is a recording and it still fails:
 
 | What you see | Cause | Fix |
 |---|---|---|
-| "הדביקו קישור להקלטת Zoom" | The link is not a `/rec/` link, or part of it was cut off when copying | Copy the whole URL from the browser address bar |
+| "הדביקו קישור להקלטת Zoom" | The link is not a `/rec/` link, or part of it was cut off when copying | Copy the whole URL from your browser's address bar |
 | A passcode field appears | The recording is passcode-protected | Enter the passcode. This path is untested — if it fails, download the file from Zoom in your browser and drop it into Tiktuv instead |
 | The download fails partway | The signed media URL expired, or the connection dropped | Try again; Tiktuv re-resolves the link on each attempt and deletes the partial file |
 | The import succeeds but the file will not transcribe | Zoom returned an HTML error page instead of video | Tiktuv probes the finished download with FFmpeg, so this surfaces at import; re-copy the link and retry |

@@ -1,4 +1,5 @@
-//! Modal dialogs rendered as overlays: export format picker and Zoom import.
+//! Modal dialogs rendered as overlays: the export format picker, Zoom import,
+//! and the proofreading-corrections review.
 
 use std::time::Duration;
 
@@ -6,6 +7,7 @@ use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::*;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Input;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme, Disableable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -14,9 +16,11 @@ use gpui_kit::{
 };
 
 use crate::app::{App, ToastTone};
+use crate::diff::{DiffKind, DiffRun, word_diff};
+use crate::editor::section_for_tab;
 use crate::format::*;
-use crate::rtl_text::rtl_paragraph;
 use crate::models::*;
+use crate::rtl_text::rtl_paragraph;
 
 enum ZoomMsg {
     Status(UrlFetchStatus),
@@ -41,36 +45,98 @@ impl App {
         } else {
             div().into_any_element()
         };
+        let corrections = if self.corrections_open {
+            self.corrections_overlay(cx)
+        } else {
+            div().into_any_element()
+        };
         div()
             .absolute()
             .inset_0()
             .child(export)
             .child(zoom)
+            .child(corrections)
             .into_any_element()
     }
 
     // -- export dialog ----------------------------------------------------
+    /// Open the dialog on whatever the editor is showing: the transcript, or
+    /// the analysis tab the user is reading.
     pub fn open_export(&mut self, cx: &mut Context<Self>) {
-        self.export_formats = vec![
+        let section = self
+            .editor
+            .as_ref()
+            .and_then(|e| e.analysis_tab)
+            .map(section_for_tab)
+            .unwrap_or(ExportSection::Transcript);
+        self.open_export_for(section, cx);
+    }
+
+    /// Open the dialog with one section pre-selected.
+    pub fn open_export_for(&mut self, section: ExportSection, cx: &mut Context<Self>) {
+        // Exports read the analysis back from disk, so an edit still inside
+        // the autosave debounce would be missing from the file.
+        self.flush_entity_save(cx);
+        self.flush_speaker_summaries_save(cx);
+        self.flush_key_points_save(cx);
+        self.flush_quotes_save(cx);
+        self.flush_action_items_save(cx);
+        self.flush_summary_save(cx);
+        self.export_sections = vec![section];
+        self.export_formats = [
             ExportFormat::Txt,
             ExportFormat::Docx,
             ExportFormat::Pdf,
             ExportFormat::Srt,
-        ];
+        ]
+        .into_iter()
+        .filter(|f| section.supports(*f))
+        .collect();
         self.export_dir = None;
         self.export_busy = false;
         self.export_open = true;
         cx.notify();
     }
 
+    /// Is this format usable by at least one selected section?
+    fn format_applies(&self, format: ExportFormat) -> bool {
+        self.export_sections.is_empty()
+            || self.export_sections.iter().any(|s| s.supports(format))
+    }
+
     fn export_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
+        let has_analysis = self
+            .editor
+            .as_ref()
+            .map(|e| e.analysis.is_some())
+            .unwrap_or(false);
+
+        let mut sections: Vec<AnyElement> = Vec::new();
+        for section in ALL_EXPORT_SECTIONS {
+            let checked = self.export_sections.contains(&section);
+            // The analysis tabs can only be exported once DeepSeek has run.
+            let locked = section != ExportSection::Transcript && !has_analysis;
+            sections.push(
+                Checkbox::new(format!("export-section-{section:?}"))
+                    .label(rtl(section_label(section)))
+                    .checked(checked)
+                    .disabled(locked)
+                    .on_change(cx.listener(move |this, value, _, cx| {
+                        this.set_export_section(section, *value, cx)
+                    }))
+                    .into_any_element(),
+            );
+        }
+
         let mut checkboxes: Vec<AnyElement> = Vec::new();
         for format in ALL_EXPORT_FORMATS {
             let checked = self.export_formats.contains(&format);
+            let applies = self.format_applies(format);
             checkboxes.push(
                 Checkbox::new(format!("export-fmt-{format:?}"))
                     .label(rtl(format_label(format)))
-                    .checked(checked)
+                    .checked(checked && applies)
+                    .disabled(!applies)
                     .on_change(cx.listener(move |this, value, _, cx| {
                         this.set_export_format(format, *value, cx)
                     }))
@@ -85,14 +151,69 @@ impl App {
                 .w(px(480.))
                 .v_flex()
                 .gap_3()
-                .child(div().text_lg().child(rtl("ייצוא התמליל")))
+                .child(div().text_lg().child(rtl("ייצוא")))
                 .child(
                     div()
                         .text_sm()
                         .text_color(rgb(0x6b7280))
-                        .child(rtl_paragraph("קובצי DOCX ו-PDF נוצרים עם פסקאות מימין לשמאל ופונט התומך בעברית.")),
+                        .child(rtl_paragraph("כל לשונית נשמרת בקובץ נפרד. קובצי DOCX ו-PDF נוצרים עם פסקאות מימין לשמאל ופונט התומך בעברית.")),
                 )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row_reverse()
+                        .items_center()
+                        .justify_between()
+                        .child(div().text_sm().child(rtl("לשוניות לייצוא")))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row_reverse()
+                                .gap_1()
+                                .child(
+                                    Button::new("export-all-sections")
+                                        .ghost()
+                                        .compact()
+                                        .label(rtl("בחר הכול"))
+                                        .disabled(!has_analysis)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.select_all_export_sections(cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new("export-only-current")
+                                        .ghost()
+                                        .compact()
+                                        .label(rtl("רק הלשונית הנוכחית"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.select_current_export_section(cx)
+                                        })),
+                                ),
+                        ),
+                )
+                .child(div().v_flex().gap_2().children(sections))
+                .when(!has_analysis, |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x6b7280))
+                            .child(rtl_paragraph("לשוניות הניתוח יהיו זמינות לייצוא אחרי שהניתוח יופק.")),
+                    )
+                })
+                .child(div().text_sm().child(rtl("פורמטים")))
                 .child(div().v_flex().gap_2().children(checkboxes))
+                .when(
+                    !self.export_sections.is_empty()
+                        && !self.export_sections.contains(&ExportSection::Transcript),
+                    |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x6b7280))
+                                .child(rtl_paragraph("כתוביות וחותמות זמן זמינות לתמלול בלבד.")),
+                        )
+                    },
+                )
                 .child(
                     div()
                         .flex()
@@ -111,7 +232,11 @@ impl App {
                             Button::new("submit-export")
                                 .primary()
                                 .label(rtl(if self.export_busy { "מייצא…" } else { "ייצוא" }))
-                                .disabled(self.export_formats.is_empty() || self.export_busy)
+                                .disabled(
+                                    self.export_formats.is_empty()
+                                        || self.export_sections.is_empty()
+                                        || self.export_busy,
+                                )
                                 .on_click(cx.listener(|this, _, _, cx| this.submit_export(cx))),
                         )
                         .child(
@@ -132,6 +257,38 @@ impl App {
         } else {
             self.export_formats.retain(|f| *f != format);
         }
+        cx.notify();
+    }
+
+    fn set_export_section(
+        &mut self,
+        section: ExportSection,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if enabled {
+            if !self.export_sections.contains(&section) {
+                self.export_sections.push(section);
+            }
+        } else {
+            self.export_sections.retain(|s| *s != section);
+        }
+        cx.notify();
+    }
+
+    fn select_all_export_sections(&mut self, cx: &mut Context<Self>) {
+        self.export_sections = ALL_EXPORT_SECTIONS.to_vec();
+        cx.notify();
+    }
+
+    fn select_current_export_section(&mut self, cx: &mut Context<Self>) {
+        let section = self
+            .editor
+            .as_ref()
+            .and_then(|e| e.analysis_tab)
+            .map(section_for_tab)
+            .unwrap_or(ExportSection::Transcript);
+        self.export_sections = vec![section];
         cx.notify();
     }
 
@@ -164,16 +321,29 @@ impl App {
         let Some(job_id) = self.editor.as_ref().map(|e| e.job_id.clone()) else {
             return;
         };
-        if self.export_formats.is_empty() {
+        if self.export_formats.is_empty() || self.export_sections.is_empty() {
             return;
         }
-        let formats = self.export_formats.clone();
+        let sections = self.export_sections.clone();
+        // Only send formats at least one chosen section can produce, so the
+        // request never carries a pair the backend would have to drop.
+        let formats: Vec<ExportFormat> = self
+            .export_formats
+            .iter()
+            .copied()
+            .filter(|f| sections.iter().any(|s| s.supports(*f)))
+            .collect();
+        if formats.is_empty() {
+            return;
+        }
         let dir = self.export_dir.clone();
         let api = self.api.clone();
         self.export_busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = api.export_job(&job_id, &formats, dir.as_deref()).await;
+            let result = api
+                .export_job(&job_id, &formats, &sections, dir.as_deref())
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.export_busy = false;
                 match result {
@@ -436,6 +606,237 @@ impl App {
         })
         .detach();
     }
+    // -- proofreading corrections dialog ----------------------------------
+    /// Open the review of everything DeepSeek corrected in the open transcript.
+    pub(crate) fn open_corrections(&mut self, cx: &mut Context<Self>) {
+        self.corrections_open = true;
+        cx.notify();
+    }
+
+    /// Close the review dialog, keeping the corrections themselves.
+    pub(crate) fn close_corrections(&mut self, cx: &mut Context<Self>) {
+        self.corrections_open = false;
+        cx.notify();
+    }
+
+    /// One row per corrected segment: what was removed, what replaced it, and
+    /// a jump that plays it in the transcript.
+    fn corrections_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(editor) = &self.editor else {
+            return div().into_any_element();
+        };
+
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut count = 0usize;
+        for (index, segment) in editor.segments.iter().enumerate() {
+            if !segment.proofread {
+                continue;
+            }
+            count += 1;
+            let start = segment.start;
+            let speaker_label = segment.speaker.as_ref().map(|key| {
+                editor
+                    .speakers
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| key.clone())
+            });
+            // The raw ASR text is kept for exactly this screen. Transcripts
+            // saved before that existed have no original to diff against, and
+            // then there is nothing honest to show as removed or added.
+            let runs: Vec<DiffRun> = match &segment.original_text {
+                Some(original) => word_diff(original, &segment.text),
+                None => Vec::new(),
+            };
+            let original = segment.original_text.clone().unwrap_or_default();
+            let corrected = segment.text.clone();
+
+            rows.push(
+                div()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(0xe5e7eb))
+                    .p_3()
+                    .v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row_reverse()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row_reverse()
+                                    .items_center()
+                                    .gap_2()
+                                    .text_xs()
+                                    .text_color(rgb(0x6b7280))
+                                    .child(rtl(&format_clock(start)))
+                                    .when(speaker_label.is_some(), |this| {
+                                        this.child(
+                                            div().text_xs().text_color(rgb(0x4f46e5)).child(rtl(
+                                                &speaker_label.clone().unwrap_or_default(),
+                                            )),
+                                        )
+                                    }),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                Button::new(format!("corrections-seek-{index}"))
+                                    .ghost()
+                                    .compact()
+                                    .label(rtl("דילוג למקטע"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.seek_to(start, cx);
+                                        this.corrections_open = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .when(!runs.is_empty(), |this| this.child(changed_words(runs)))
+                    .when(!original.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .flex_row_reverse()
+                                .items_start()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(0xdc2626))
+                                        .whitespace_nowrap()
+                                        .child(rtl("לפני:")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .text_color(rgb(0x991b1b))
+                                        .line_through()
+                                        .child(rtl_paragraph(&original)),
+                                ),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row_reverse()
+                            .items_start()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(0x059669))
+                                    .whitespace_nowrap()
+                                    .child(rtl("אחרי:")),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(rgb(0x065f46))
+                                    .child(rtl_paragraph(&corrected)),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
+
+        modal(
+            cx,
+            div()
+                .w(px(560.))
+                .v_flex()
+                .gap_3()
+                .child(
+                    div()
+                        .text_lg()
+                        .child(rtl(&format!("תיקוני ההגהה ({count})"))),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(0x6b7280))
+                        .child(rtl_paragraph(
+                            "מה ש-DeepSeek שינה בכל מקטע: אדום עם קו חוצה — הוסר, ירוק — נוסף במקומו. \"דילוג למקטע\" מנגן אותו בתמליל.",
+                        )),
+                )
+                .when(count == 0, |this| {
+                    this.child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(0x6b7280))
+                            .child(rtl_paragraph("אין מקטעים שתוקנו בהגהה בתמליל הנוכחי.")),
+                    )
+                })
+                .child(
+                    div()
+                        .max_h(px(420.))
+                        .overflow_y_scrollbar()
+                        .v_flex()
+                        .gap_2()
+                        .children(rows),
+                )
+                .child(
+                    div().flex().flex_row_reverse().gap_2().child(
+                        Button::new("close-corrections")
+                            .ghost()
+                            .label(rtl("סגירה"))
+                            .on_click(cx.listener(|this, _, _, cx| this.close_corrections(cx))),
+                    ),
+                ),
+        )
+    }
+}
+
+/// The changed words of one correction as chips: removed words struck through
+/// in red, added words in green. Unchanged words are skipped, so this line is
+/// short — the context is in the "לפני"/"אחרי" lines around it.
+fn changed_words(runs: Vec<DiffRun>) -> AnyElement {
+    let mut chips: Vec<AnyElement> = Vec::new();
+    for run in runs {
+        if run.kind == DiffKind::Equal {
+            continue;
+        }
+        let removed = run.kind == DiffKind::Removed;
+        for word in run.text.split_whitespace() {
+            chips.push(
+                div()
+                    .px_1()
+                    .rounded_md()
+                    .whitespace_nowrap()
+                    .bg(if removed {
+                        rgb(0xdc2626).opacity(0.08)
+                    } else {
+                        rgb(0x059669).opacity(0.08)
+                    })
+                    .text_color(if removed {
+                        rgb(0xdc2626)
+                    } else {
+                        rgb(0x059669)
+                    })
+                    .when(removed, |this| this.line_through())
+                    .child(rtl(word))
+                    .into_any_element(),
+            );
+        }
+    }
+    // Children in logical order inside a reversed row: the removed words sit
+    // to the right of their replacements, as they would in a diff.
+    div()
+        .flex()
+        .flex_row_reverse()
+        .flex_wrap()
+        .items_center()
+        .gap_1()
+        .text_sm()
+        .children(chips)
+        .into_any_element()
 }
 
 fn modal(cx: &mut Context<App>, content: impl IntoElement) -> AnyElement {

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tiktuv-backend"
-version = "1.0.0"
+version = "1.0.2"
 description = "Local-first Hebrew speech-to-text backend for Tiktuv"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -39,11 +39,6 @@ asr = [
     "accelerate==1.2.1",
     "huggingface-hub==0.27.0",
     "safetensors==0.4.5",
-]
-# The desktop window host. Renders with the system WebView2 runtime, so the
-# window is ours (own icon, own taskbar identity) without bundling a browser.
-desktop = [
-    "pywebview==5.3.2",
 ]
 dev = [
     "pytest==8.3.4",

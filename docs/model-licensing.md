@@ -58,8 +58,7 @@ register a backend. See [architecture.md](architecture.md#diarization).
 | ReportLab | BSD-3-Clause | PDF generation |
 | python-docx | MIT | DOCX generation |
 | python-bidi | LGPL-3.0 | Unicode bidi for PDF painting |
-| React | MIT | UI |
-| Tauri | MIT / Apache-2.0 | Desktop shell |
+| gpui-kit | MIT / Apache-2.0 | The application's GUI toolkit |
 
 **FFmpeg** is a separate executable invoked over a process boundary, so its
 licence does not propagate to Tiktuv. If you redistribute Tiktuv with an FFmpeg

@@ -7,10 +7,6 @@ winget install Python.Python.3.12
 ```
 
 ```bash
-winget install OpenJS.NodeJS.LTS
-```
-
-```bash
 winget install Gyan.FFmpeg
 ```
 
@@ -18,14 +14,15 @@ winget install Gyan.FFmpeg
 winget install Git.Git
 ```
 
-**Open a new terminal after installing.** winget updates `PATH`, and processes
-that were already running do not see the change.
-
-For the desktop shell only:
-
 ```bash
 winget install Rustlang.Rustup
 ```
+
+**Open a new terminal after installing.** winget updates `PATH`, and processes
+that were already running do not see the change.
+
+Rust builds the application itself, so it is required, not optional. Python
+runs the transcription backend the application talks to.
 
 ```bash
 winget install Microsoft.VisualStudio.2022.BuildTools
@@ -70,56 +67,47 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -e apps/backend[asr,dev]
 ```
 
-```bash
-npm --prefix apps/frontend install
-```
-
 ## Running
 
-Both processes at once:
-
 ```bash
-scripts\dev.ps1
+cargo run --manifest-path apps/desktop-gpui/Cargo.toml
 ```
+
+That is the whole loop: the app walks up from the working directory until it
+finds `.venv`, starts `python -m tiktuv` as a child process, and shuts it down
+again when the window closes.
 
 Without any model download — the deterministic mock backend, which is ideal for
 UI work:
 
 ```bash
-scripts\dev.ps1 -Mock
+$env:TIKTUV_ASR_BACKEND = 'mock'
 ```
 
-Separately, if you prefer two terminals:
+To watch the backend's log, or to work on the API on its own, start it by hand
+first; the app attaches to a backend that is already running rather than
+spawning a second one:
 
 ```bash
 .venv\Scripts\python.exe -m tiktuv --log-level DEBUG
 ```
 
-```bash
-npm --prefix apps/frontend run dev
-```
-
 The backend prints `TIKTUV_READY <path>` on stdout; that file holds the live
-port and the session token. `scripts\dev.ps1` copies the token into
-`apps/frontend/.env.local` for you.
+port and the session token.
 
 With `TIKTUV_LOG_LEVEL=DEBUG` the OpenAPI docs are served at
 <http://127.0.0.1:8756/api/docs>. They are disabled otherwise, because they
 would be an unauthenticated surface on a port every local process can reach.
 
-## Desktop shell
+## Release build
 
 ```bash
-npm --prefix apps/desktop install
+scripts\build-rust.ps1 -Zip
 ```
 
-```bash
-npm --prefix apps/desktop run tauri dev
-```
-
-In development the shell locates the repository's `.venv` and runs
-`python -m tiktuv`. In a packaged build it runs the frozen sidecar next to the
-executable.
+In development the app locates the repository's `.venv` and runs
+`python -m tiktuv`. In a packaged build it runs the frozen `tiktuv-backend.exe`
+next to the executable — see [portable.md](portable.md).
 
 ## Tests
 
@@ -128,11 +116,7 @@ executable.
 ```
 
 ```bash
-npm --prefix apps/frontend run test
-```
-
-```bash
-npm --prefix apps/frontend run check
+cargo test --manifest-path apps/desktop-gpui/Cargo.toml
 ```
 
 The backend suite uses real FFmpeg with the mock ASR backend, so it needs no
@@ -167,5 +151,19 @@ rejected at startup, by design.
 .venv\Scripts\python.exe -m mypy apps/backend/tiktuv
 ```
 
-Backend: ruff plus mypy in strict mode. Frontend: ESLint plus `tsc --noEmit`,
-which `npm run check` runs together.
+Backend: ruff plus mypy in strict mode.
+
+The application uses rustfmt and clippy, neither of which is installed by
+default with the minimal rustup profile:
+
+```bash
+rustup component add rustfmt clippy
+```
+
+```bash
+cargo fmt --manifest-path apps/desktop-gpui/Cargo.toml --check
+```
+
+```bash
+cargo clippy --manifest-path apps/desktop-gpui/Cargo.toml
+```

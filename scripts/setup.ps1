@@ -4,8 +4,11 @@
 
 .DESCRIPTION
     Creates the Python virtualenv, installs PyTorch for the chosen device,
-    installs the backend and frontend dependencies, and runs the environment
-    doctor. Safe to re-run.
+    installs the backend, and runs the environment doctor. Safe to re-run.
+
+    The desktop app itself is Rust: build it with `cargo run` (debug) or
+    scripts\build-rust.ps1 (release, packaged). Rust is not installed here —
+    get it from https://rustup.rs if `cargo` is missing.
 
 .PARAMETER Device
     'cpu' (default) or 'cuda'. Chooses which PyTorch wheel index to use.
@@ -49,10 +52,12 @@ if ([version]($pythonVersion -split '\+')[0] -lt [version]'3.12.0') {
     throw "Python 3.12 or newer is required; found $pythonVersion."
 }
 
-if (-not (Test-Tool 'node')) {
-    throw "Node.js was not found on PATH. Install Node 20+ (winget install OpenJS.NodeJS.LTS)."
+if (Test-Tool 'cargo') {
+    Write-Host "    $(cargo --version)"
+} else {
+    Write-Warning "Rust was not found on PATH. The backend will work, but the"
+    Write-Warning "desktop app cannot be built. Install it from https://rustup.rs"
 }
-Write-Host "    Node $(node --version)"
 
 if (Test-Tool 'ffmpeg') {
     Write-Host "    FFmpeg found"
@@ -90,11 +95,6 @@ $extras = if ($SkipAsr) { 'dev' } else { 'asr,dev' }
 & $venvPython -m pip install -e "apps/backend[$extras]"
 if ($LASTEXITCODE -ne 0) { throw "backend installation failed" }
 
-# -- frontend --------------------------------------------------------------
-Write-Step "Installing frontend dependencies"
-npm --prefix apps/frontend install
-if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
-
 # -- doctor ----------------------------------------------------------------
 Write-Step "Checking the environment"
 & $venvPython -m tiktuv.doctor
@@ -102,7 +102,7 @@ $doctorExit = $LASTEXITCODE
 
 Write-Host ""
 if ($doctorExit -eq 0) {
-    Write-Host "Setup complete. Start the app with: scripts\dev.ps1" -ForegroundColor Green
+    Write-Host "Setup complete. Start the app with: cargo run --manifest-path apps/desktop-gpui/Cargo.toml" -ForegroundColor Green
 } else {
     Write-Warning "Setup finished, but the environment check reported problems (see above)."
     Write-Host "See docs/troubleshooting.md" -ForegroundColor Yellow

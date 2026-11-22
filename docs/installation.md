@@ -7,9 +7,9 @@ Windows 10 (21H2 or newer) and Windows 11.
 **From the package you were given:** unzip it somewhere permanent (for example
 `C:\Tiktuv` — not inside the ZIP), then double-click **`Install Tiktuv.cmd`**.
 
-It installs everything needed, including Python, Node and FFmpeg if they are
-missing, and puts a **Tiktuv** icon on your Desktop and in the Start Menu. The
-first run takes several minutes.
+It installs everything needed, including Python, Rust and FFmpeg if they are
+missing, compiles Tiktuv, and puts a **Tiktuv** icon on your Desktop and in the
+Start Menu. Expect 10-20 minutes the first time, most of it compiling.
 
 If Windows warns about the file, choose *More info* → *Run anyway*; the
 installer is a plain-text script you can open and read first.
@@ -21,16 +21,12 @@ installer is a plain-text script you can open and read first.
 ```
 
 That puts a **Tiktuv** icon on your Desktop and in the Start Menu. Launching it
-starts the local service in the background and opens Tiktuv in its own window —
-no address bar, no browser tabs, its own taskbar entry. Closing the window stops
-the service.
+starts the transcription service in the background and opens Tiktuv's own
+window. Closing the window stops the service.
 
-**From an installer**, once one is built: run `Tiktuv_1.0.0_x64-setup.exe` (or
-the `.msi`). It installs for the current user, so no administrator rights are
-needed.
-
-Windows 10 may prompt to install the **WebView2 runtime** — accept it. Windows
-11 already includes it.
+**Without installing anything**, use the portable build: a folder holding
+`Tiktuv.exe` and everything it needs, which runs from any path — a USB stick
+included. See [portable.md](portable.md).
 
 ## 2. Install FFmpeg
 
@@ -73,7 +69,7 @@ If you would rather fetch it during setup, so the first transcription starts
 immediately:
 
 ```bash
-scripts\install-desktop.ps1 -DownloadModel
+.\install.ps1 -DownloadModel
 ```
 
 **This is the only time Tiktuv uses the internet.** Once it completes,
@@ -108,13 +104,8 @@ mid-job, **נסה שוב** resumes from the last saved point instead of restarti
 
 ## Uninstall
 
-If you installed from source, remove the shortcuts with:
-
-```bash
-scripts\install-desktop.ps1 -Uninstall
-```
-
-If you used an installer, uninstall from **Settings → Apps**. Either way your
+Tiktuv installs no system-wide state: delete the Desktop and Start Menu
+shortcuts, and the folder you unzipped (or the portable folder). Your
 data stays in place. To remove
 that as well, delete `%LOCALAPPDATA%\Tiktuv` — it holds the models,
 transcripts, history and exports. See [privacy.md](privacy.md).

@@ -1,6 +1,6 @@
 """Download a model from the command line — ``python -m tiktuv.fetch_model``.
 
-Used by ``scripts/install-desktop.ps1`` to pre-fetch the Hebrew model when
+Used by ``install.ps1`` to pre-fetch the Hebrew model when
 preparing a machine, so the first transcription does not wait on a 3 GB
 download. The application does the same thing automatically on first use; this
 just moves it to install time.

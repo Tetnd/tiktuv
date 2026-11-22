@@ -6,7 +6,7 @@ Most tests live next to the code they cover:
 |---|---|---|
 | Backend unit + integration | `apps/backend/tests/` | `.venv\Scripts\python.exe -m pytest apps/backend/tests -v` |
 | Real-model integration (opt-in) | `apps/backend/tests/integration/` | see below |
-| Frontend unit + component | `apps/frontend/src/test/` | `npm --prefix apps/frontend run test` |
+| Desktop application | `apps/desktop-gpui/src/` | `cargo test --manifest-path apps/desktop-gpui/Cargo.toml` |
 
 ## End-to-end
 
@@ -38,10 +38,7 @@ scripts\smoke-test.ps1 -Real
 
 ## Contract drift
 
-The TypeScript contracts in `packages/shared-types` are written by hand and can
-drift from the backend's Pydantic enums. This compares them and fails on any
-mismatch:
-
-```bash
-scripts\check-shared-types.ps1
-```
+The application's structs in `apps/desktop-gpui/src/models.rs` are written by
+hand against the backend's Pydantic schemas, so they can drift from them. There
+is no automated check for this: when you change `tiktuv/schemas.py`, change
+`models.rs` in the same commit.

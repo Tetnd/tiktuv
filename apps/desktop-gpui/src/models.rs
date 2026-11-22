@@ -29,6 +29,7 @@ pub enum JobStage {
     LoadingModel,
     Transcribing,
     Diarizing,
+    Proofreading,
     GeneratingSubtitles,
     Exporting,
     Done,
@@ -72,6 +73,35 @@ pub enum TimestampMode {
     Segment,
     #[serde(rename = "word")]
     Word,
+}
+
+/// One exportable part of a job: the transcript, or a single analysis tab.
+/// Each section is written as its own file, so a tab can be exported alone.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportSection {
+    #[default]
+    Transcript,
+    Summary,
+    KeyPoints,
+    ActionItems,
+    NamedEntities,
+    SpeakerSummaries,
+    SpeakerQuotes,
+}
+
+impl ExportSection {
+    /// Subtitles and timestamped text need a timeline, which only the
+    /// transcript has — the backend skips the other pairs.
+    pub fn supports(self, format: ExportFormat) -> bool {
+        match self {
+            Self::Transcript => true,
+            _ => matches!(
+                format,
+                ExportFormat::Txt | ExportFormat::Docx | ExportFormat::Pdf | ExportFormat::Json
+            ),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -119,6 +149,8 @@ pub struct TranscriptionSettings {
     pub vocabulary_prompt: String,
     pub auto_download_model: bool,
     pub enable_diarization: bool,
+    pub enable_proofreading: bool,
+    pub proofread_model: String,
     pub output_dir: Option<String>,
     pub export_formats: Vec<ExportFormat>,
 }
@@ -144,6 +176,8 @@ impl Default for TranscriptionSettings {
             vocabulary_prompt: String::new(),
             auto_download_model: true,
             enable_diarization: false,
+            enable_proofreading: true,
+            proofread_model: String::new(),
             output_dir: None,
             export_formats: Vec::new(),
         }
@@ -174,6 +208,12 @@ pub struct Segment {
     pub edited: bool,
     #[serde(default)]
     pub boundary_merged: bool,
+    /// True when DeepSeek corrected this segment during proofreading.
+    #[serde(default)]
+    pub proofread: bool,
+    /// The raw ASR text, when proofreading or an edit replaced it.
+    #[serde(default)]
+    pub original_text: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -188,6 +228,10 @@ pub struct Transcript {
     pub speakers: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub partial: bool,
+    #[serde(default)]
+    pub proofread_model: String,
+    #[serde(default)]
+    pub proofread_corrections: u32,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -338,6 +382,8 @@ pub struct ExportResult {
     pub format: ExportFormat,
     pub path: String,
     pub size_bytes: u64,
+    #[serde(default)]
+    pub section: ExportSection,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

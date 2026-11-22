@@ -86,6 +86,7 @@ pub struct App {
     pub(crate) deepseek_status: Option<DeepSeekStatus>,
     pub(crate) export_open: bool,
     pub(crate) export_formats: Vec<ExportFormat>,
+    pub(crate) export_sections: Vec<ExportSection>,
     pub(crate) export_dir: Option<String>,
     pub(crate) export_busy: bool,
     pub(crate) zoom_open: bool,
@@ -95,6 +96,8 @@ pub struct App {
     pub(crate) zoom_status: Option<UrlFetchStatus>,
     pub(crate) zoom_starting: bool,
     pub(crate) zoom_error: Option<String>,
+    /// The proofreading-corrections review dialog is open.
+    pub(crate) corrections_open: bool,
 }
 
 impl App {
@@ -127,6 +130,7 @@ impl App {
             deepseek_status: None,
             export_open: false,
             export_formats: Vec::new(),
+            export_sections: Vec::new(),
             export_dir: None,
             export_busy: false,
             zoom_open: false,
@@ -136,6 +140,7 @@ impl App {
             zoom_status: None,
             zoom_starting: false,
             zoom_error: None,
+            corrections_open: false,
         };
 
         this.refresh_jobs(cx);
@@ -901,12 +906,12 @@ impl App {
 }
 
 impl Render for App {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = self.header(cx).into_any_element();
         let content: AnyElement = match self.screen {
             Screen::Queue => self.queue_screen(cx).into_any_element(),
             Screen::History => self.render_history(cx),
-            Screen::Editor => self.render_editor(cx),
+            Screen::Editor => self.render_editor(window, cx),
             Screen::System => self.render_system(cx),
         };
         let toasts = self.toast_layer(cx).into_any_element();
@@ -920,7 +925,10 @@ impl Render for App {
             .text_color(cx.theme().foreground)
             .text_right()
             .child(header)
-            .child(div().flex_1().min_h_0().overflow_y_scrollbar().child(content))
+            // The scrolled content is a flex column (its height is auto with
+            // a viewport-height minimum), so a screen can `flex_1` to fill
+            // the page — a percentage height would not resolve here.
+            .child(div().flex_1().min_h_0().v_flex().overflow_y_scrollbar().child(content))
             .child(toasts)
             .child(overlays)
     }

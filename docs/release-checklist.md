@@ -5,10 +5,10 @@
 - [ ] `.venv\Scripts\python.exe -m pytest apps/backend/tests -v` — all pass
 - [ ] `.venv\Scripts\python.exe -m ruff check apps/backend` — clean
 - [ ] `.venv\Scripts\python.exe -m mypy apps/backend/tiktuv` — clean
-- [ ] `npm --prefix apps/frontend run check` — typecheck and lint clean
-- [ ] `npm --prefix apps/frontend run test` — all pass
-- [ ] Version bumped in `apps/backend/tiktuv/__init__.py`, both `package.json`
-      files, `Cargo.toml` and `tauri.conf.json`, and all four agree
+- [ ] `cargo build --release --manifest-path apps/desktop-gpui/Cargo.toml` — clean
+- [ ] `cargo test --manifest-path apps/desktop-gpui/Cargo.toml` — all pass
+- [ ] Version bumped in `apps/backend/tiktuv/__init__.py` and
+      `apps/desktop-gpui/Cargo.toml`, and the two agree
 
 ## 2. The real model
 
@@ -96,12 +96,14 @@ Use a fresh VM or a new Windows user account.
 
 ## 10. Packaging
 
-- [ ] `scripts\build-windows.ps1` produces both MSI and NSIS installers
-- [ ] Installers are signed, or the unsigned SmartScreen warning is documented
+- [ ] `scripts\build-rust.ps1 -Zip` produces the portable folder and its ZIP
+- [ ] `Tiktuv.exe` is signed, or the unsigned SmartScreen warning is documented
       in the release notes
 - [ ] The frozen backend starts and prints its handshake line
 - [ ] Closing the window terminates the backend — verify in Task Manager
-- [ ] Installing over a previous version preserves history and downloaded models
+- [ ] The folder runs from a different drive letter than it was built at, and
+      writes nothing outside itself ([portable.md](portable.md))
+- [ ] Reusing an existing `%LOCALAPPDATA%\Tiktuv` preserves history and models
 
 ## 11. Documentation
 

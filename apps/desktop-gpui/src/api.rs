@@ -520,12 +520,29 @@ impl Api {
         &self,
         id: &str,
         formats: &[ExportFormat],
+        sections: &[ExportSection],
         output_dir: Option<&str>,
     ) -> Result<ExportResponse, ApiError> {
         let req = self.post_json(
             &format!("/api/jobs/{id}/export"),
-            serde_json::json!({ "formats": formats, "output_dir": output_dir }),
+            serde_json::json!({
+                "formats": formats,
+                "sections": sections,
+                "output_dir": output_dir,
+            }),
         );
+        self.run(async move {
+            let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
+            Self::parse(resp).await
+        })
+        .await
+    }
+
+    /// Hand the stored transcript to DeepSeek for proofreading and get the
+    /// corrected one back. Slow by nature — a reasoning model, one round-trip
+    /// per batch of segments — so callers show progress and do not time out.
+    pub async fn proofread(&self, id: &str) -> Result<Transcript, ApiError> {
+        let req = self.post_json(&format!("/api/jobs/{id}/proofread"), serde_json::json!({}));
         self.run(async move {
             let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
             Self::parse(resp).await
@@ -545,6 +562,114 @@ impl Api {
 
     pub async fn create_analysis(&self, id: &str) -> Result<TranscriptAnalysis, ApiError> {
         let req = self.post_json(&format!("/api/jobs/{id}/analysis"), serde_json::json!({}));
+        self.run(async move {
+            let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
+            Self::parse(resp).await
+        })
+        .await
+    }
+
+    /// Replace the entity list of an existing analysis, leaving the rest of it
+    /// untouched. Used by the editor's add/remove/rename controls.
+    pub async fn save_named_entities(
+        &self,
+        id: &str,
+        entities: &[NamedEntity],
+    ) -> Result<TranscriptAnalysis, ApiError> {
+        let req = self.put_json(
+            &format!("/api/jobs/{id}/analysis/named-entities"),
+            serde_json::json!({ "named_entities": entities }),
+        );
+        self.run(async move {
+            let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
+            Self::parse(resp).await
+        })
+        .await
+    }
+
+    /// Replace the speaker-summary list of an existing analysis, leaving the
+    /// rest of it untouched. Used by the editor's summary fields.
+    pub async fn save_speaker_summaries(
+        &self,
+        id: &str,
+        summaries: &[SpeakerSummary],
+    ) -> Result<TranscriptAnalysis, ApiError> {
+        let req = self.put_json(
+            &format!("/api/jobs/{id}/analysis/speaker-summaries"),
+            serde_json::json!({ "speaker_summaries": summaries }),
+        );
+        self.run(async move {
+            let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
+            Self::parse(resp).await
+        })
+        .await
+    }
+
+    /// Replace the action-item list of an existing analysis, leaving the rest
+    /// of it untouched. Used by the editor's add/edit/remove controls.
+    pub async fn save_action_items(
+        &self,
+        id: &str,
+        items: &[ActionItem],
+    ) -> Result<TranscriptAnalysis, ApiError> {
+        let req = self.put_json(
+            &format!("/api/jobs/{id}/analysis/action-items"),
+            serde_json::json!({ "action_items": items }),
+        );
+        self.run(async move {
+            let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
+            Self::parse(resp).await
+        })
+        .await
+    }
+
+    /// Replace the key-point list of an existing analysis, leaving the rest of
+    /// it untouched. Used by the editor's add/edit/remove controls.
+    pub async fn save_key_points(
+        &self,
+        id: &str,
+        points: &[String],
+    ) -> Result<TranscriptAnalysis, ApiError> {
+        let req = self.put_json(
+            &format!("/api/jobs/{id}/analysis/key-points"),
+            serde_json::json!({ "key_points": points }),
+        );
+        self.run(async move {
+            let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
+            Self::parse(resp).await
+        })
+        .await
+    }
+
+    /// Replace the speaker-quote list of an existing analysis, leaving the
+    /// rest of it untouched. Used by the editor's add/edit/remove controls.
+    pub async fn save_speaker_quotes(
+        &self,
+        id: &str,
+        quotes: &[SpeakerQuote],
+    ) -> Result<TranscriptAnalysis, ApiError> {
+        let req = self.put_json(
+            &format!("/api/jobs/{id}/analysis/speaker-quotes"),
+            serde_json::json!({ "speaker_quotes": quotes }),
+        );
+        self.run(async move {
+            let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
+            Self::parse(resp).await
+        })
+        .await
+    }
+
+    /// Replace the summary of an existing analysis, leaving the rest of it
+    /// untouched. Used by the editor's תקציר field.
+    pub async fn save_summary(
+        &self,
+        id: &str,
+        summary: &str,
+    ) -> Result<TranscriptAnalysis, ApiError> {
+        let req = self.put_json(
+            &format!("/api/jobs/{id}/analysis/summary"),
+            serde_json::json!({ "summary": summary }),
+        );
         self.run(async move {
             let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
             Self::parse(resp).await

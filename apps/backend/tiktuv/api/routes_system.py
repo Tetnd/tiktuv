@@ -8,7 +8,7 @@ import sys
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict
 
-from .. import __version__, dialogs
+from .. import __version__
 from ..asr import registry
 from ..asr.device import cuda_version, list_devices, torch_version
 from ..errors import ErrorCode, FFmpegMissingError
@@ -337,47 +337,6 @@ def delete_model(model_id: str, state: StateDep, _auth: AuthDep) -> CleanupResul
         state.models.release()
     reclaimed = registry.delete_model(model_id, state.settings)
     return CleanupResult(reclaimed_bytes=reclaimed, detail=f"deleted {model_id}")
-
-
-class PickFolderRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    #: Where the dialog should start. Ignored if it no longer exists.
-    initial: str | None = None
-
-
-class PickFolderResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    #: True when this session can show a native dialog at all.
-    available: bool
-    #: The chosen directory, or null if the user cancelled.
-    path: str | None = None
-
-
-@router.get("/system/pick-folder", response_model=PickFolderResponse)
-def can_pick_folder(_auth: AuthDep) -> PickFolderResponse:
-    """Whether a native folder dialog can be shown in this session.
-
-    The UI uses this to decide whether to offer a browse button, so that the
-    browser-fallback session shows a plain path field instead of a button that
-    would do nothing.
-    """
-    return PickFolderResponse(available=dialogs.is_available())
-
-
-@router.post("/system/pick-folder", response_model=PickFolderResponse)
-def pick_folder(
-    payload: PickFolderRequest, _auth: AuthDep
-) -> PickFolderResponse:
-    """Open a native folder chooser and return what the user picked.
-
-    Blocks until the dialog closes. Cancelling is not an error — it returns a
-    null path, and the caller leaves the current value alone.
-    """
-    if not dialogs.is_available():
-        return PickFolderResponse(available=False)
-    return PickFolderResponse(available=True, path=dialogs.pick_folder(payload.initial))
 
 
 @router.post("/system/cleanup/temp", response_model=CleanupResult)

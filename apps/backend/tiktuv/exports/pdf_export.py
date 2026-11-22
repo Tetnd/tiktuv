@@ -352,3 +352,48 @@ class PdfExporter:
                 page.draw_line(line, size=style.body_size, right_edge=text_right)
                 page.advance()
             page.advance(4.0)
+
+
+def write_simple_pdf(
+    path: Path,
+    *,
+    title: str,
+    meta: list[str],
+    blocks: list[tuple[str | None, list[str]]],
+    style: PageStyle | None = None,
+) -> Path:
+    """Write a plain right-to-left PDF made of headings and paragraphs.
+
+    Shares the transcript exporter's layout engine — wrap in logical order,
+    shape each finished line — so Hebrew comes out correct here too.
+    """
+    register_fonts()
+    style = style or PageStyle()
+    try:
+        page = _RtlCanvas(path, style, title)
+        page.paragraph(title, font=FONT_NAME_BOLD, size=style.title_size, gap_after=4.0)
+        for line in meta:
+            page.paragraph(
+                line, size=style.meta_size, color=style.muted_color, gap_after=2.0
+            )
+        page.canvas.setStrokeColor(HexColor("#E5E7EB"))
+        page.canvas.setLineWidth(0.7)
+        page.canvas.line(page.left, page.y, page.right, page.y)
+        page.advance(14.0)
+
+        for heading, lines in blocks:
+            if heading:
+                page.ensure_space(style.line_height * 2)
+                page.paragraph(
+                    heading, font=FONT_NAME_BOLD, size=style.body_size + 1.0, gap_after=2.0
+                )
+            for line in lines:
+                page.paragraph(line)
+        page.finish()
+    except ExportError:
+        raise
+    except OSError as exc:
+        raise ExportError(f"could not write {path.name}: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - reportlab raises broadly
+        raise ExportError(f"PDF generation failed: {exc}") from exc
+    return path

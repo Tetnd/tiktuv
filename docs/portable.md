@@ -3,74 +3,62 @@
 A portable build is a single folder that runs Tiktuv on any Windows 10/11
 machine with nothing installed: no setup program, no registry entries, no
 Python on the host, and no files written outside the folder. Copy it to a USB
-stick or another PC, double-click `Tiktuv.cmd`, and delete the folder to
+stick or another PC, double-click `Tiktuv.exe`, and delete the folder to
 uninstall.
 
 ## Building one
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-portable.ps1 -IncludeModel -Zip
+powershell -ExecutionPolicy Bypass -File scripts\build-rust.ps1 -Zip
 ```
 
 | Switch | Effect |
 |---|---|
-| *(none)* | ~1.9 GB folder; the model downloads on first run |
-| `-IncludeModel` | Copies the 6.2 GB weights in, so the first run needs no network |
-| `-Cuda` | CUDA build of PyTorch instead of CPU — bigger, and only helps on a recent NVIDIA GPU |
-| `-Destination <path>` | Where to build (default: your desktop) |
+| *(none)* | Builds into `build\Tiktuv-Portable`; the model downloads on first run |
+| `-Destination <path>` | Where to build (default: `build\Tiktuv-Portable`) |
+| `-SkipBackendFreeze` | Reuse the frozen backend from a previous run |
+| `-SkipRustBuild` | Reuse `target\release\tiktuv-desktop.exe` from a previous run |
 | `-Zip` | Also produce a `.zip` beside the folder |
 
-The frontend must already be built (`npm --prefix apps/frontend run build`); the
-script copies `dist/` rather than building it.
+It needs the Rust toolchain, the developer virtualenv (`scripts\setup.ps1`),
+and FFmpeg — either on `PATH` or downloaded automatically.
 
 ## What is inside
 
 ```
 Tiktuv-Portable\
-    Tiktuv.cmd              launch
-    Tiktuv (Console).cmd    launch with the log visible, for diagnosing
+    Tiktuv.exe          the app — double-click this
+    tiktuv-backend.exe  the transcription engine, started by the app
     README.txt
-    python\                 the interpreter and every library
-    app\apps\backend\       Tiktuv itself
-    app\apps\frontend\dist\ the built UI
-    tools\                  ffmpeg.exe, ffprobe.exe
-    models\                 the speech model
-    data\                   created on first run
+    tools\              ffmpeg.exe, ffprobe.exe
+    data\               created on first run
+    models\             the speech model, downloaded on first use
 ```
 
 ## Why it is path-independent
 
-The ordinary installer builds a virtual environment, and a venv is **not**
-relocatable: `pyvenv.cfg` and every `Scripts\*.exe` shim record the absolute
-path it was created at. Move the folder, or plug the stick into a machine that
-assigns a different drive letter, and it breaks.
+Two separate executables, neither of which records where it was built:
 
-The portable build uses CPython's **embeddable distribution** instead — a
-plain interpreter with no installer, no registry keys and no `%APPDATA%`
-presence, which runs correctly from any path.
+- **The app** resolves everything from the folder holding `Tiktuv.exe`,
+  computed at run time from its own path. When it finds `tiktuv-backend.exe`
+  beside itself, it treats that folder as the application root and keeps
+  `data\` and `models\` inside it — see `portable_data_dir` in
+  `apps/desktop-gpui/src/backend.rs`.
+- **The backend** is frozen by PyInstaller into one executable: an interpreter
+  and every library in a single file that unpacks to a temporary directory at
+  start-up. There is no virtualenv, and so none of the absolute paths a venv
+  bakes into `pyvenv.cfg` and its `Scripts\*.exe` shims — which is exactly what
+  stops an ordinary installed copy from being moved to another drive letter.
 
-Two details make that work:
-
-- **`python\python312._pth` lists the search path**, including
-  `..\app\apps\backend`. Entries are resolved relative to the folder holding
-  `python.exe`, so they follow the folder wherever it goes.
-- **`PYTHONPATH` is deliberately not used.** When a `._pth` file is present the
-  interpreter *ignores* `PYTHONPATH` entirely and builds `sys.path` from that
-  file alone. Setting it looks like it should work and silently does nothing.
-
-The launcher derives every location from `%~dp0` — the folder the `.cmd` is
-sitting in, resolved at run time — and passes them in as `TIKTUV_DATA_DIR`,
-`TIKTUV_MODELS_DIR`, `TIKTUV_FFMPEG_PATH` and `TIKTUV_FFPROBE_PATH`. No
+The app passes the folder's locations to the backend as `TIKTUV_DATA_DIR`,
+`TIKTUV_MODELS_DIR`, `TIKTUV_FFMPEG_PATH` and `TIKTUV_FFPROBE_PATH`, so no
 absolute path is ever written into the build.
 
 ## Requirements on the host machine
 
-- Windows 10 or 11, 64-bit.
-- The **WebView2 runtime**, which ships with Windows 11 and with Microsoft Edge
-  on Windows 10. Without it Tiktuv falls back to opening in the default
-  browser, which still works — you just lose the dedicated window and icon.
-
-Nothing else. Python, FFmpeg and the model all travel in the folder.
+Windows 10 or 11, 64-bit. Nothing else: Python, FFmpeg and the model all travel
+in the folder, and the app draws its own window rather than using a browser
+engine, so no WebView2 runtime is involved.
 
 ## Running from a USB stick
 
@@ -82,20 +70,15 @@ unaffected.
 Writes go to `data\` on the stick — including temporary decoded audio, which
 can be large for long recordings. Leave a few GB free.
 
-## Verified
+## Before you rely on it
 
-Built, then run from a different drive letter than it was built at (via
-`subst`), on Windows 11:
+Build it, then run it from a different drive letter than it was built at (via
+`subst`) and check that:
 
-- the app started, cleared a stale lock left by an earlier crash, and served
-  the UI over HTTP 200 with its session token injected
-- FFmpeg resolved to the bundled copy (`8.1.2-full_build`)
-- the database, logs, media, temp, transcripts, exports and the WebView2
-  profile were all created **inside** the folder
-- the window opened with the Tiktuv icon
-- the model download started into the folder's own `models\`
+- the app starts and the backend comes up with it,
+- FFmpeg resolves to the bundled copy rather than one on the host,
+- `data\`, `models\`, logs and exports are all created **inside** the folder,
+- the model download starts into the folder's own `models\`.
 
-Not verified: running on a machine that has never had Python, Tiktuv or the
-WebView2 runtime installed. Everything is bundled and no host state is read,
-but that is reasoning, not a test — try it on the target machine before relying
-on it.
+The same run on a machine that has never had Python or Tiktuv installed is the
+one that actually proves the "nothing installed" claim.

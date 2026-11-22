@@ -44,13 +44,15 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = DEFAULT_PORT
     auth_token: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
-    #: Origins allowed to call the API. Vite dev server + the Tauri shell.
+    #: Origins allowed to call the API.
+    #:
+    #: The desktop app is a native HTTP client and sends no Origin header, so
+    #: this list exists for the browser cases only: a page opened against a
+    #: backend started by hand, or the Docker setup in docker-compose.yml.
     allowed_origins: list[str] = Field(
         default_factory=lambda: [
-            "http://127.0.0.1:5173",
-            "http://localhost:5173",
-            "tauri://localhost",
-            "http://tauri.localhost",
+            "http://127.0.0.1:8756",
+            "http://localhost:8756",
         ]
     )
 

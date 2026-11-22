@@ -13,6 +13,7 @@ failing the whole request.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 
 import httpx
@@ -46,7 +47,11 @@ _SYSTEM_PROMPT = (
     '  "speaker_quotes": [{"speaker": "דובר 1", "quotes": ["ציטוט"]}]\n'
     "}\n"
     "כתוב הכול בעברית. היה נאמן לנאמר ואל תמציא פרטים. אם אין דוברים מזוהים, "
-    "השאר את speaker_summaries ו-speaker_quotes ריקים."
+    "השאר את speaker_summaries ו-speaker_quotes ריקים.\n"
+    "עיצוב השדה summary: אל תכתוב גוש טקסט אחד. כתוב משפט פתיחה קצר שמתאר במה "
+    "עוסקת השיחה, ואחריו פסקאות קצרות (2-3 משפטים כל אחת) המופרדות בשורה ריקה "
+    "(\\n\\n). כשיש רשימה של נושאים או שלבים, כתוב אותם כשורות נפרדות שמתחילות "
+    "ב-\"• \" (כל שורה מופרדת ב-\\n). שמור על משפטים קצרים וברורים."
 )
 
 
@@ -116,6 +121,30 @@ def generate_analysis(
     return _parse_analysis(content, transcript, model)
 
 
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+_SENTENCES_PER_PARAGRAPH = 2
+
+
+def _format_summary(text: str) -> str:
+    """Make sure the summary is broken into readable paragraphs.
+
+    The model is asked to structure it, but if it still returns one block of
+    text (no line breaks at all), split it into short paragraphs by sentence.
+    """
+    text = text.replace("\r\n", "\n").strip()
+    if "\n" in text:
+        # Already structured: just collapse runs of blank lines.
+        return re.sub(r"\n{3,}", "\n\n", text)
+    sentences = [s for s in _SENTENCE_END.split(text) if s]
+    if len(sentences) <= _SENTENCES_PER_PARAGRAPH:
+        return text
+    paragraphs = [
+        " ".join(sentences[i : i + _SENTENCES_PER_PARAGRAPH])
+        for i in range(0, len(sentences), _SENTENCES_PER_PARAGRAPH)
+    ]
+    return "\n\n".join(paragraphs)
+
+
 def _parse_analysis(content: str, transcript: Transcript, model: str) -> TranscriptAnalysis:
     raw = _parse_json(content)
     if not isinstance(raw, dict):
@@ -147,7 +176,7 @@ def _parse_analysis(content: str, transcript: Transcript, model: str) -> Transcr
 
     return TranscriptAnalysis(
         job_id=transcript.job_id,
-        summary=str(raw.get("summary") or "").strip(),
+        summary=_format_summary(str(raw.get("summary") or "")),
         key_points=[str(item) for item in raw.get("key_points") or [] if str(item).strip()],
         action_items=actions,
         named_entities=entities,

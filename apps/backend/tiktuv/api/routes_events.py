@@ -1,8 +1,8 @@
 """Server-Sent Events stream for live progress.
 
-SSE rather than WebSockets: the traffic is one-directional, it reconnects
-automatically in every browser, and it needs no extra protocol handling in the
-Tauri shell.
+SSE rather than WebSockets: the traffic is one-directional and it needs no
+extra protocol handling in the desktop app, which reads the stream with a
+plain HTTP client.
 """
 
 from __future__ import annotations

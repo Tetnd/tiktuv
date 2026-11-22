@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tiktuv.config import Settings
-from tiktuv.schemas import ExportFormat, JobStatus
+from tiktuv.schemas import ExportFormat, ExportSection, JobStatus, TranscriptAnalysis
 
 from .conftest import requires_ffmpeg
 
@@ -95,7 +95,7 @@ class TestAuthorization:
     ) -> None:
         body = unauthenticated_client.get("/api/jobs").json()
         assert body["message"] and body["remedy"]
-        assert any("\u0590" <= ch <= "\u05ff" for ch in body["message"])
+        assert any("֐" <= ch <= "׿" for ch in body["message"])
 
 
 class TestSystem:
@@ -352,7 +352,7 @@ class TestTranscriptEditing:
         job_id = self._completed_job(client, sample_mp3)
         payload = client.get(f"/api/jobs/{job_id}/transcript").json()
         text = payload["segments"][0]["text"]
-        assert any("\u0590" <= ch <= "\u05ff" for ch in text)
+        assert any("֐" <= ch <= "׿" for ch in text)
         # A reversed Hebrew sentence would not start with a Hebrew letter
         # followed by its true successor; assert the exact known phrase.
         assert text.strip()[0] != text.strip()[::-1][0] or len(set(text)) == 1
@@ -446,6 +446,65 @@ class TestExportApi:
     def test_lists_supported_formats(self, client: TestClient) -> None:
         formats = client.get("/api/export/formats").json()
         assert set(formats) == {fmt.value for fmt in ExportFormat}
+
+    def test_lists_exportable_sections(self, client: TestClient) -> None:
+        sections = client.get("/api/export/sections").json()
+        by_name = {entry["section"]: entry["formats"] for entry in sections}
+        assert set(by_name) == {s.value for s in ExportSection}
+        # Subtitles need a timeline, so only the transcript offers them.
+        assert "srt" in by_name["transcript"]
+        assert "srt" not in by_name["summary"]
+
+    def test_exports_one_analysis_tab_on_its_own(
+        self, client: TestClient, sample_mp3: Path, tmp_path: Path
+    ) -> None:
+        job_id = self._completed_job(client, sample_mp3)
+        state = client.app.state.tiktuv
+        state.transcripts.save_analysis(
+            TranscriptAnalysis(
+                job_id=job_id,
+                summary="תקציר לבדיקה",
+                key_points=["נקודה אחת"],
+                model="deepseek-chat",
+            )
+        )
+
+        response = client.post(
+            f"/api/jobs/{job_id}/export",
+            json={
+                "formats": ["txt"],
+                "sections": ["key_points"],
+                "output_dir": str(tmp_path / "יעד"),
+            },
+        )
+        assert response.status_code == 200, response.text
+        results = response.json()["results"]
+        assert [r["section"] for r in results] == ["key_points"]
+        written = Path(results[0]["path"])
+        assert written.is_file()
+        assert "נקודה אחת" in written.read_text(encoding="utf-8")
+
+    def test_exporting_a_tab_without_an_analysis_is_rejected(
+        self, client: TestClient, sample_mp3: Path
+    ) -> None:
+        job_id = self._completed_job(client, sample_mp3)
+        response = client.post(
+            f"/api/jobs/{job_id}/export",
+            json={"formats": ["txt"], "sections": ["summary"]},
+        )
+        assert response.status_code >= 400
+
+    def test_formats_default_to_the_transcript(
+        self, client: TestClient, sample_mp3: Path, tmp_path: Path
+    ) -> None:
+        """A request without ``sections`` behaves exactly as it used to."""
+        job_id = self._completed_job(client, sample_mp3)
+        response = client.post(
+            f"/api/jobs/{job_id}/export",
+            json={"formats": ["txt"], "output_dir": str(tmp_path / "ברירת")},
+        )
+        assert response.status_code == 200, response.text
+        assert [r["section"] for r in response.json()["results"]] == ["transcript"]
 
     def test_exports_all_six_required_formats(
         self, client: TestClient, sample_mp3: Path, tmp_path: Path
@@ -594,11 +653,9 @@ class TestInputValidation:
 
 class TestPrivacy:
     def test_no_outbound_hosts_are_configured(self, settings: Settings) -> None:
-        """Every allowed origin must be loopback or the Tauri shell."""
+        """Every allowed origin must be loopback."""
         for origin in settings.allowed_origins:
-            assert (
-                "127.0.0.1" in origin or "localhost" in origin or origin.startswith("tauri://")
-            )
+            assert "127.0.0.1" in origin or "localhost" in origin
 
     def test_backend_refuses_a_non_loopback_bind(self) -> None:
         with pytest.raises(ValueError, match="loopback"):

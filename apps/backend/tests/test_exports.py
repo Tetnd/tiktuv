@@ -10,14 +10,25 @@ from pathlib import Path
 import pytest
 
 from tiktuv.errors import ExportError
-from tiktuv.exports import SUPPORTED_FORMATS, export_transcript, get_exporter
+from tiktuv.exports import (
+    SUPPORTED_FORMATS,
+    export_job,
+    export_transcript,
+    get_exporter,
+)
 from tiktuv.exports.base import ExportContext
 from tiktuv.exports.pdf_export import PdfExporter, register_fonts, shape_rtl
 from tiktuv.schemas import (
+    ActionItem,
     ExportFormat,
+    ExportSection,
+    NamedEntity,
     Segment,
+    SpeakerQuote,
+    SpeakerSummary,
     TimestampMode,
     Transcript,
+    TranscriptAnalysis,
     TranscriptionSettings,
     Word,
 )
@@ -372,3 +383,186 @@ class TestExportTranscript:
             stem="ריק",
         )
         assert len(results) == 3
+
+
+@pytest.fixture
+def analysis() -> TranscriptAnalysis:
+    return TranscriptAnalysis(
+        job_id="test-job-0001",
+        summary="הישיבה דנה בתקציב.",
+        key_points=["תקציב 2026", "תוכנית עבודה"],
+        action_items=[ActionItem(task="להכין מצגת", assignee="דובר 1")],
+        named_entities=[
+            NamedEntity(name="Whisper", type="organization"),
+            NamedEntity(name="תל אביב", type="location"),
+        ],
+        speaker_summaries=[SpeakerSummary(speaker="דובר 1", summary="פתח את הישיבה.")],
+        speaker_quotes=[SpeakerQuote(speaker="דובר 1", quotes=["נתחיל בתקציב"])],
+        model="deepseek-chat",
+        generated_at=datetime.now(UTC),
+    )
+
+
+class TestExportSections:
+    """Every section is its own file, so one tab can be exported alone."""
+
+    def test_one_analysis_tab_on_its_own(
+        self, transcript: Transcript, analysis: TranscriptAnalysis, tmp_path: Path
+    ) -> None:
+        results = export_job(
+            transcript,
+            TranscriptionSettings(),
+            sections=[ExportSection.KEY_POINTS],
+            formats=[ExportFormat.TXT, ExportFormat.DOCX, ExportFormat.PDF],
+            output_dir=tmp_path,
+            stem="ישיבה",
+            analysis=analysis,
+        )
+        assert {r.format for r in results} == {
+            ExportFormat.TXT,
+            ExportFormat.DOCX,
+            ExportFormat.PDF,
+        }
+        assert {r.section for r in results} == {ExportSection.KEY_POINTS}
+        for result in results:
+            path = Path(result.path)
+            assert path.is_file() and result.size_bytes > 0
+            # The tab name is in the filename, so the files are told apart.
+            assert "נקודות מפתח" in path.stem
+
+    def test_every_section_gets_its_own_file(
+        self, transcript: Transcript, analysis: TranscriptAnalysis, tmp_path: Path
+    ) -> None:
+        results = export_job(
+            transcript,
+            TranscriptionSettings(),
+            sections=list(ExportSection),
+            formats=[ExportFormat.TXT],
+            output_dir=tmp_path,
+            stem="ישיבה",
+            analysis=analysis,
+        )
+        assert {r.section for r in results} == set(ExportSection)
+        paths = [r.path for r in results]
+        assert len(set(paths)) == len(paths)
+
+    def test_analysis_content_reaches_the_text_file(
+        self, transcript: Transcript, analysis: TranscriptAnalysis, tmp_path: Path
+    ) -> None:
+        results = export_job(
+            transcript,
+            TranscriptionSettings(),
+            sections=[ExportSection.ACTION_ITEMS],
+            formats=[ExportFormat.TXT],
+            output_dir=tmp_path,
+            stem="ישיבה",
+            analysis=analysis,
+        )
+        text = Path(results[0].path).read_text(encoding="utf-8")
+        assert "להכין מצגת" in text
+        assert "דובר 1" in text
+
+    def test_json_holds_only_that_section(
+        self, transcript: Transcript, analysis: TranscriptAnalysis, tmp_path: Path
+    ) -> None:
+        results = export_job(
+            transcript,
+            TranscriptionSettings(),
+            sections=[ExportSection.NAMED_ENTITIES],
+            formats=[ExportFormat.JSON],
+            output_dir=tmp_path,
+            stem="ישיבה",
+            analysis=analysis,
+        )
+        data = json.loads(Path(results[0].path).read_text(encoding="utf-8"))
+        assert data["section"] == "named_entities"
+        assert [e["name"] for e in data["named_entities"]] == ["Whisper", "תל אביב"]
+        assert "summary" not in data
+
+    def test_subtitle_formats_are_skipped_for_an_analysis_tab(
+        self, transcript: Transcript, analysis: TranscriptAnalysis, tmp_path: Path
+    ) -> None:
+        results = export_job(
+            transcript,
+            TranscriptionSettings(),
+            sections=[ExportSection.SUMMARY],
+            formats=[ExportFormat.SRT, ExportFormat.VTT, ExportFormat.TXT],
+            output_dir=tmp_path,
+            stem="ישיבה",
+            analysis=analysis,
+        )
+        assert [r.format for r in results] == [ExportFormat.TXT]
+
+    def test_both_text_formats_write_the_analysis_file_once(
+        self, transcript: Transcript, analysis: TranscriptAnalysis, tmp_path: Path
+    ) -> None:
+        results = export_job(
+            transcript,
+            TranscriptionSettings(),
+            sections=[ExportSection.SUMMARY],
+            formats=[ExportFormat.TXT, ExportFormat.TXT_TIMESTAMPED],
+            output_dir=tmp_path,
+            stem="ישיבה",
+            analysis=analysis,
+        )
+        assert len(results) == 1
+
+    def test_the_transcript_keeps_its_own_filename(
+        self, transcript: Transcript, analysis: TranscriptAnalysis, tmp_path: Path
+    ) -> None:
+        results = export_job(
+            transcript,
+            TranscriptionSettings(),
+            sections=[ExportSection.TRANSCRIPT, ExportSection.SUMMARY],
+            formats=[ExportFormat.TXT],
+            output_dir=tmp_path,
+            stem="ישיבה",
+            analysis=analysis,
+        )
+        by_section = {r.section: Path(r.path) for r in results}
+        assert by_section[ExportSection.TRANSCRIPT].stem == "ישיבה"
+        assert by_section[ExportSection.SUMMARY].stem != "ישיבה"
+
+    def test_an_empty_tab_still_produces_a_readable_file(
+        self, transcript: Transcript, tmp_path: Path
+    ) -> None:
+        empty = TranscriptAnalysis(job_id="test-job-0001", model="deepseek-chat")
+        results = export_job(
+            transcript,
+            TranscriptionSettings(),
+            sections=[ExportSection.KEY_POINTS],
+            formats=[ExportFormat.TXT],
+            output_dir=tmp_path,
+            stem="ישיבה",
+            analysis=empty,
+        )
+        text = Path(results[0].path).read_text(encoding="utf-8")
+        assert "לא נמצאו" in text
+
+    def test_an_analysis_tab_without_an_analysis_fails(
+        self, transcript: Transcript, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ExportError):
+            export_job(
+                transcript,
+                TranscriptionSettings(),
+                sections=[ExportSection.SUMMARY],
+                formats=[ExportFormat.TXT],
+                output_dir=tmp_path,
+                stem="ישיבה",
+            )
+
+    def test_a_missing_analysis_does_not_cost_the_transcript(
+        self, transcript: Transcript, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ExportError) as excinfo:
+            export_job(
+                transcript,
+                TranscriptionSettings(),
+                sections=[ExportSection.TRANSCRIPT, ExportSection.SUMMARY],
+                formats=[ExportFormat.TXT],
+                output_dir=tmp_path,
+                stem="ישיבה",
+            )
+        assert (tmp_path / "ישיבה.txt").is_file()
+        assert excinfo.value.context.get("succeeded")

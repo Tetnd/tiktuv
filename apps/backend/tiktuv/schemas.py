@@ -1,7 +1,7 @@
 """Pydantic contracts shared by the API, the worker and the exporters.
 
-``packages/shared-types`` mirrors these for TypeScript; keep the two in sync
-(``scripts/check-shared-types.ps1`` diffs the enum members).
+``apps/desktop-gpui/src/models.rs`` mirrors these in Rust by hand; change the
+two together.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class JobStatus(StrEnum):
 
 
 class JobStage(StrEnum):
-    """User-visible stage. Maps 1:1 to a Hebrew label in the frontend."""
+    """User-visible stage. Maps 1:1 to a Hebrew label in the desktop app."""
 
     PENDING = "pending"              # ממתין בתור
     PREPARING_MEDIA = "preparing_media"        # מכין את המדיה
@@ -33,6 +33,7 @@ class JobStage(StrEnum):
     LOADING_MODEL = "loading_model"            # טוען מודל
     TRANSCRIBING = "transcribing"              # מתמלל
     DIARIZING = "diarizing"                    # מזהה דוברים
+    PROOFREADING = "proofreading"              # מגיה את התמליל
     GENERATING_SUBTITLES = "generating_subtitles"  # מייצר כתוביות
     EXPORTING = "exporting"                    # מייצא
     DONE = "done"                              # הושלם
@@ -60,6 +61,18 @@ class TimestampMode(StrEnum):
     NONE = "none"
     SEGMENT = "segment"
     WORD = "word"
+
+
+class ExportSection(StrEnum):
+    """One exportable part of a job: the transcript or an analysis tab."""
+
+    TRANSCRIPT = "transcript"
+    SUMMARY = "summary"
+    KEY_POINTS = "key_points"
+    ACTION_ITEMS = "action_items"
+    NAMED_ENTITIES = "named_entities"
+    SPEAKER_SUMMARIES = "speaker_summaries"
+    SPEAKER_QUOTES = "speaker_quotes"
 
 
 class ExportFormat(StrEnum):
@@ -137,6 +150,14 @@ class TranscriptionSettings(BaseModel):
     # Optional module — see tiktuv/diarization.
     enable_diarization: bool = False
 
+    #: Hand the finished transcript to DeepSeek, acting as a professional
+    #: Hebrew copy-editor, to fix transcription mistakes. Needs a DeepSeek API
+    #: key; without one the stage is skipped with a warning rather than
+    #: failing the job.
+    enable_proofreading: bool = True
+    #: The DeepSeek model that proofreads. Empty means the module default.
+    proofread_model: str = Field(default="", max_length=120)
+
     output_dir: str | None = None
     export_formats: list[ExportFormat] = Field(default_factory=list)
 
@@ -178,6 +199,11 @@ class Segment(BaseModel):
     edited: bool = False
     #: Set on segments that were reconstructed across a chunk boundary.
     boundary_merged: bool = False
+    #: True when DeepSeek corrected this segment during proofreading.
+    proofread: bool = False
+    #: The raw ASR text, kept whenever proofreading or an edit replaced it, so
+    #: the change stays reviewable and reversible in the editor.
+    original_text: str | None = None
 
     @property
     def duration(self) -> float:
@@ -195,6 +221,10 @@ class Transcript(BaseModel):
     speakers: dict[str, str] = Field(default_factory=dict)
     #: True while the job is still running and this is a partial snapshot.
     partial: bool = False
+    #: The DeepSeek model that proofread this transcript, when one did.
+    proofread_model: str = ""
+    #: How many segments proofreading corrected.
+    proofread_corrections: int = 0
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -337,11 +367,93 @@ class UpdateSegmentsRequest(BaseModel):
     speakers: dict[str, str] | None = None
 
 
+class UpdateNamedEntitiesRequest(BaseModel):
+    """A hand-edited entity list for one analysis.
+
+    Only the entities are replaceable: other fields came from the model or
+    from other editors, so sending the whole analysis would let a stale client
+    overwrite them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    named_entities: list[NamedEntity]
+
+
+class UpdateKeyPointsRequest(BaseModel):
+    """A hand-edited key-point list for one analysis.
+
+    Editing does not touch ``generated_at`` or ``model`` — no new generation
+    happened, the list was just changed by the user.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    key_points: list[str]
+
+
+class UpdateSpeakerQuotesRequest(BaseModel):
+    """A hand-edited speaker-quote list for one analysis.
+
+    Quotes are edited the same way as the transcript text: the editor owns
+    the list, and whatever it last sent is what gets exported.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    speaker_quotes: list[SpeakerQuote]
+
+
+class UpdateSpeakerSummariesRequest(BaseModel):
+    """A hand-edited speaker-summary list for one analysis.
+
+    Only the speaker summaries are replaceable, for the same reason as
+    :class:`UpdateNamedEntitiesRequest`: everything else in the analysis came
+    from the model and must not be overwritten by a stale editor.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    speaker_summaries: list[SpeakerSummary]
+
+
+class UpdateActionItemsRequest(BaseModel):
+    """A hand-edited action-item list for one analysis.
+
+    Only the action items are replaceable, for the same reason as
+    :class:`UpdateNamedEntitiesRequest`: everything else in the analysis came
+    from the model and must not be overwritten by a stale editor.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_items: list[ActionItem]
+
+
+class UpdateSummaryRequest(BaseModel):
+    """A hand-edited summary for one analysis.
+
+    Only the summary is replaceable, for the same reason as
+    :class:`UpdateNamedEntitiesRequest`: everything else in the analysis came
+    from the model and must not be overwritten by a stale editor.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+
+
 class ExportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     formats: list[ExportFormat] = Field(min_length=1)
     output_dir: str | None = None
+    #: Which parts of the job to write. Each section becomes its own file per
+    #: format, so a caller can export one analysis tab on its own. Defaults to
+    #: the transcript alone, which is what older clients expect.
+    sections: list[ExportSection] = Field(
+        default_factory=lambda: [ExportSection.TRANSCRIPT]
+    )
 
 
 class ExportResult(BaseModel):
@@ -350,6 +462,7 @@ class ExportResult(BaseModel):
     format: ExportFormat
     path: str
     size_bytes: int
+    section: ExportSection = ExportSection.TRANSCRIPT
 
 
 # --------------------------------------------------------------------------

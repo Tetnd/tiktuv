@@ -15,6 +15,7 @@ and it always shows its size and destination first.
 - ⚡ CUDA GPU / CPU, automatic device detection, FP16, configurable batch size
 - 🧩 Streaming chunked processing — multi-hour recordings without loading them into RAM
 - ✍️ Built-in RTL transcript editor with a synchronized media player
+- ✨ AI proofreading with DeepSeek — every correction stays reviewable: removed words struck through, replacements highlighted, and a one-click jump to the segment
 - 📤 Export TXT, timestamped TXT, DOCX, PDF, SRT, VTT, JSON — DOCX/PDF are genuinely RTL
 - 💾 Local SQLite job history with crash-safe recovery and partial results
 
@@ -38,10 +39,9 @@ and it always shows its size and destination first.
 | Component | Minimum | Notes |
 |---|---|---|
 | OS | Windows 10 21H2 / Windows 11 | Linux & macOS are architecturally supported, not yet packaged |
-| Python | 3.12+ | Bundled in the desktop installer |
-| Node.js | 20+ | Frontend build only |
+| Python | 3.12+ | The transcription backend; bundled in the portable build |
+| Rust | stable | Builds the desktop application itself |
 | FFmpeg | 6.0+ | `ffmpeg` + `ffprobe` on `PATH`, or set `TIKTUV_FFMPEG_PATH` |
-| Rust | stable | Only to build the Tauri desktop shell |
 | Disk | ~15 GB free | `ivrit-ai/whisper-large-v3` is ≈6.2 GB to download and on disk — it ships FP32 weights in two shards, twice the size of OpenAI's FP16 upload |
 | RAM | 8 GB (CPU) | 16 GB recommended |
 | VRAM | 6 GB (FP16 GPU) | CPU inference works without a GPU, just slower |
@@ -61,30 +61,32 @@ Double-click **`Install Tiktuv.cmd`**, or from PowerShell:
 .\install.ps1
 ```
 
-From a clean Windows 10/11 machine that installs Python, Node and FFmpeg if
+From a clean Windows 10/11 machine that installs Python, Rust and FFmpeg if
 they are missing, sets up an isolated environment, picks the right PyTorch
-build for the hardware, builds the interface, and puts a **Tiktuv** icon on the
-Desktop. Re-running it is safe — finished steps are skipped.
+build for the hardware, compiles the application, and puts a **Tiktuv** icon on
+the Desktop. Re-running it is safe — finished steps are skipped. The first
+build of the GUI stack takes 10-20 minutes.
 
 ### Running it from a folder, with nothing installed
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-portable.ps1 -IncludeModel -Zip
+powershell -ExecutionPolicy Bypass -File scripts\build-rust.ps1 -Zip
 ```
 
-Produces a self-contained folder that runs on any Windows 10/11 machine with no
-setup, no Python and no registry entries, from any path or drive letter — a USB
-stick included. See [docs/portable.md](docs/portable.md).
+Produces a self-contained folder — `Tiktuv.exe` plus a frozen backend — that
+runs on any Windows 10/11 machine with no setup, no Python and no registry
+entries, from any path or drive letter, a USB stick included. See
+[docs/portable.md](docs/portable.md).
 
 ### Giving it to someone
 
 ```bash
-scripts\package-source.ps1 -IncludeBuiltUI
+scripts\package-source.ps1
 ```
 
-Produces `Tiktuv-<version>.zip` (about 0.5 MB) on your Desktop. It deliberately
-excludes `.venv`, `node_modules`, the model cache and any recordings — those
-are either machine-specific or private. The recipient unzips it, double-clicks
+Produces `Tiktuv-<version>.zip` on your Desktop. It deliberately excludes
+`.venv`, Rust build output, the model cache and any recordings — those are
+either machine-specific or private. The recipient unzips it, double-clicks
 `Install Tiktuv.cmd`, and gets the same result.
 
 ### Developing on it
@@ -94,10 +96,12 @@ scripts\setup.ps1
 ```
 
 ```bash
-scripts\dev.ps1
+cargo run --manifest-path apps/desktop-gpui/Cargo.toml
 ```
 
-Backend on `http://127.0.0.1:8756`, frontend on `http://127.0.0.1:5173`.
+`setup.ps1` prepares the Python side. The app starts the backend itself: in a
+source checkout it walks up from the working directory until it finds `.venv`
+and runs `python -m tiktuv`, so there is no second command to keep running.
 
 ---
 
@@ -137,58 +141,29 @@ Then the backend itself. `asr` pulls in Transformers for real transcription;
 To work on the API, exports or tests without the multi-gigabyte ML stack,
 install `[dev]` alone and run with `TIKTUV_ASR_BACKEND=mock`.
 
-Frontend:
-
-```bash
-npm --prefix apps/frontend install
-```
-
 ### 2. Check the environment
 
 ```bash
 .venv\Scripts\python.exe -m tiktuv.doctor
 ```
 
-### 3. Start the backend
+### 3. Run the desktop application
+
+```bash
+cargo run --manifest-path apps/desktop-gpui/Cargo.toml
+```
+
+The app spawns the backend as a child process, waits for its
+`TIKTUV_READY <path>` handshake, and reads the port and session token from that
+file. Closing the window kills the child, so a stray backend can never outlive
+it.
+
+### 4. Start the backend on its own
+
+Only needed to work on the API directly — the app does this for you:
 
 ```bash
 .venv\Scripts\python.exe -m tiktuv --host 127.0.0.1 --port 8756
-```
-
-### 4. Start the frontend
-
-```bash
-npm --prefix apps/frontend run dev
-```
-
-### 5. Run the desktop application
-
-**Install it as a desktop app** — creates a "Tiktuv" icon you can
-double-click. No Rust toolchain needed:
-
-```bash
-scripts\install-desktop.ps1 -StartMenu
-```
-
-This builds the UI, generates the icon, and adds Desktop and Start Menu
-shortcuts. Launching runs the backend in the background and opens the UI in a
-dedicated application window (Edge or Chrome in `--app` mode: no address bar,
-no tabs, its own taskbar entry). Closing the window shuts the backend down.
-
-To remove the shortcuts (your transcripts and models are untouched):
-
-```bash
-scripts\install-desktop.ps1 -Uninstall
-```
-
-**Or run the Tauri shell** during development, which needs Rust:
-
-```bash
-npm --prefix apps/desktop install
-```
-
-```bash
-npm --prefix apps/desktop run tauri dev
 ```
 
 ### 6. Run tests
@@ -199,16 +174,10 @@ Backend (fast, model fully mocked — no download, no GPU):
 .venv\Scripts\python.exe -m pytest apps/backend/tests -v
 ```
 
-Frontend unit + RTL/component tests:
+Desktop application:
 
 ```bash
-npm --prefix apps/frontend run test
-```
-
-Frontend type-check and lint:
-
-```bash
-npm --prefix apps/frontend run check
+cargo test --manifest-path apps/desktop-gpui/Cargo.toml
 ```
 
 Backend lint and type-check:
@@ -240,18 +209,15 @@ $env:TIKTUV_RUN_REAL_MODEL_TEST=1
 .venv\Scripts\python.exe -m pytest apps/backend/tests/integration -v -s
 ```
 
-### 7. Build a Windows installer
+### 7. Build a distributable
 
 ```bash
-npm --prefix apps/frontend run build
+scripts\build-rust.ps1 -Zip
 ```
 
-```bash
-scripts/build-windows.ps1
-```
-
-The MSI and NSIS installers land in
-`apps/desktop/src-tauri/target/release/bundle/`.
+Freezes the backend with PyInstaller, compiles the app in release mode, and
+assembles `build\Tiktuv-Portable\` (plus a `.zip`) — a folder that runs
+anywhere with nothing installed. See [docs/portable.md](docs/portable.md).
 
 ---
 
@@ -302,11 +268,8 @@ with a live progress bar, and queues it for transcription like any dropped file.
 tiktuv/
   apps/
     backend/          FastAPI + inference + media + exports (Python 3.12)
-    frontend/         React 18 + TypeScript + Vite + Tailwind (RTL)
-    desktop/          Tauri 2 shell, manages the bundled backend process
-  packages/
-    shared-types/     TypeScript mirror of the backend Pydantic contracts
-  scripts/            setup, dev, smoke-test, build-windows, contract check
+    desktop-gpui/     the application: native Rust GUI on gpui-kit (RTL)
+  scripts/            setup, build-rust, package-source, smoke-test
   docs/               all documentation listed above
   samples/            drop-in folder for your own recordings (fixtures are generated)
   tests/              cross-cutting end-to-end tests
@@ -320,9 +283,8 @@ Be precise about what has and has not been exercised.
 
 **Verified by running it:**
 
-- 482 backend tests + 5 skipped (`pytest`), 150 frontend tests (`vitest`)
-- `ruff` clean, `mypy --strict` clean across 54 backend modules
-- Frontend type-check, lint and production build clean
+- 473 backend tests + 5 skipped (`pytest`)
+- `ruff` clean, `mypy --strict` clean across 57 backend modules
 - End-to-end smoke test: 31 checks against a real backend process — Hebrew
   filenames, transcription, editing, all six export formats written and opened,
   MP4 audio extraction, path-traversal rejection, history reopen
@@ -336,12 +298,6 @@ Be precise about what has and has not been exercised.
   app: the model loads via `AutoModelForSpeechSeq2Seq` + `AutoProcessor`,
   transcribes an MP3 and an MP4, returns Hebrew, and is loaded once and reused
   across jobs (`scripts\smoke-test.ps1 -Real` — 31/31)
-- **The desktop app**: shortcut launches the backend, opens a dedicated window,
-  serves the UI with an injected session token, and shuts down on close
-- **The portable build**, run from a different drive letter than it was built
-  at: it started, served the UI, resolved the bundled FFmpeg, opened its window
-  with the right icon, and kept every file inside its own folder
-  ([docs/portable.md](docs/portable.md))
 
 **Not verified here, and you should not assume it works until you check:**
 
@@ -354,12 +310,17 @@ Be precise about what has and has not been exercised.
 - **Zoom passcode-protected links.** Link resolution, streaming download,
   progress and cancellation are verified against a real recording; the passcode
   submission path is not.
-- **The portable build on a machine that has never had Python, Tiktuv or the
-  WebView2 runtime installed.** Everything is bundled and no host state is
-  read, but that is reasoning, not a test.
-- **The Tauri MSI/NSIS installer.** No Rust toolchain here, so
-  `scripts\build-windows.ps1` has not been run end to end. The desktop-shortcut
-  route (`scripts\install-desktop.ps1`) is what was verified.
+- **The desktop application end to end.** The backend is covered by the tests
+  and the smoke test above, and the app compiles clean; the window itself —
+  importing, transcribing, editing and exporting through the native UI — has
+  not been exercised in this checkout. The end-to-end evidence that used to
+  stand here was for the browser-based UI, which has been removed, so it says
+  nothing about this one.
+- **The portable build.** `scripts\build-rust.ps1` assembles it, but it has not
+  been run here, and running it from a different drive letter on a machine that
+  has never had Python or Tiktuv installed is what would actually prove the
+  "nothing installed" claim. [docs/portable.md](docs/portable.md) lists what to
+  check.
 
 [docs/release-checklist.md](docs/release-checklist.md) is the list to work
 through before shipping.

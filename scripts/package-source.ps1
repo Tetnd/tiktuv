@@ -6,10 +6,10 @@
     Produces a ZIP containing everything needed to install Tiktuv on another
     Windows machine, and nothing else. Deliberately excluded:
 
-      * .venv and node_modules  - multi-gigabyte, and both bake in absolute
-                                  paths, so copying them to another machine
+      * .venv                   - multi-gigabyte, and it bakes in absolute
+                                  paths, so copying it to another machine
                                   produces a subtly broken install
-      * apps\desktop\src-tauri	arget - Rust build output
+      * target                  - Rust build output, rebuilt by the installer
       * the model cache         - 6.2 GB, and the installer fetches it
       * data, logs, transcripts - the previous user's recordings must never
                                   travel with the program
@@ -20,17 +20,12 @@
 .PARAMETER Destination
     Where to write the ZIP. Defaults to the Desktop.
 
-.PARAMETER IncludeBuiltUI
-    Include the prebuilt interface, so the recipient does not need to wait for
-    (or succeed at) an npm build. Adds a few hundred KB. Recommended.
-
 .EXAMPLE
-    scripts\package-source.ps1 -IncludeBuiltUI
+    scripts\package-source.ps1
 #>
 [CmdletBinding()]
 param(
-    [string]$Destination = [Environment]::GetFolderPath('Desktop'),
-    [switch]$IncludeBuiltUI
+    [string]$Destination = [Environment]::GetFolderPath('Desktop')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,19 +58,12 @@ $include = @(
     'apps\backend\tiktuv',
     'apps\backend\pyproject.toml',
     'apps\backend\tests',
-    'apps\frontend\src',
-    'apps\frontend\public',
-    'apps\frontend\index.html',
-    'apps\frontend\package.json',
-    'apps\frontend\package-lock.json',
-    'apps\frontend\tsconfig.json',
-    'apps\frontend\vite.config.ts',
-    'apps\frontend\tailwind.config.js',
-    'apps\frontend\postcss.config.js',
-    'apps\frontend\.eslintrc.cjs',
-    'apps\desktop\src-tauri',
-    'apps\desktop\package.json',
-    'packages',
+    'apps\desktop-gpui\src',
+    'apps\desktop-gpui\assets',
+    'apps\desktop-gpui\Cargo.toml',
+    # The lock file travels too: the recipient must compile the same
+    # dependency versions this was tested with.
+    'apps\desktop-gpui\Cargo.lock',
     'scripts',
     'docs',
     'samples\README.md',
@@ -102,18 +90,6 @@ foreach ($relative in $include) {
     } else {
         Copy-Item $source $target -Force
     }
-}
-
-if ($IncludeBuiltUI) {
-    $dist = Join-Path $repoRoot 'apps\frontend\dist'
-    if (-not (Test-Path (Join-Path $dist 'index.html'))) {
-        Write-Step "Building the interface first"
-        npm --prefix apps/frontend install --no-audit --no-fund
-        npm --prefix apps/frontend run build
-        if ($LASTEXITCODE -ne 0) { throw "interface build failed" }
-    }
-    Copy-Item $dist (Join-Path $stageDir 'apps\frontend\dist') -Recurse -Force
-    Write-Host "    included the prebuilt interface" -ForegroundColor DarkGray
 }
 
 # Belt and braces: remove anything that should never ship, even if it slipped

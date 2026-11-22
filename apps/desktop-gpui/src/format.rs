@@ -1,10 +1,10 @@
-//! Hebrew display formatting, mirroring `apps/frontend/src/lib/format.ts`.
+//! Hebrew display formatting.
 //!
 //! Direction is the text system's job (as `dir="rtl"` was in the web app); these
 //! helpers only format values and, like the web originals, wrap Latin/digit runs
 //! in left-to-right marks so a bidi renderer keeps them together inside Hebrew.
 
-use crate::models::{ExportFormat, JobStage, JobStatus};
+use crate::models::{ExportFormat, ExportSection, JobStage, JobStatus};
 
 use unicode_bidi::{BidiInfo, Level};
 
@@ -227,6 +227,7 @@ pub fn stage_label(stage: JobStage) -> &'static str {
         JobStage::LoadingModel => "טוען מודל",
         JobStage::Transcribing => "מתמלל",
         JobStage::Diarizing => "מזהה דוברים",
+        JobStage::Proofreading => "מגיה את התמליל",
         JobStage::GeneratingSubtitles => "מייצר כתוביות",
         JobStage::Exporting => "מייצא",
         JobStage::Done => "הושלם",
@@ -252,6 +253,30 @@ pub const ALL_EXPORT_FORMATS: [ExportFormat; 7] = [
     ExportFormat::Vtt,
     ExportFormat::Json,
 ];
+
+pub const ALL_EXPORT_SECTIONS: [ExportSection; 7] = [
+    ExportSection::Transcript,
+    ExportSection::Summary,
+    ExportSection::KeyPoints,
+    ExportSection::ActionItems,
+    ExportSection::NamedEntities,
+    ExportSection::SpeakerSummaries,
+    ExportSection::SpeakerQuotes,
+];
+
+/// Same wording as the editor's tab bar, so the export dialog names the tabs
+/// the way the user just saw them.
+pub fn section_label(section: ExportSection) -> &'static str {
+    match section {
+        ExportSection::Transcript => "תמלול",
+        ExportSection::Summary => "תקציר",
+        ExportSection::KeyPoints => "נקודות מפתח",
+        ExportSection::ActionItems => "משימות",
+        ExportSection::NamedEntities => "יישויות",
+        ExportSection::SpeakerSummaries => "סיכום דוברים",
+        ExportSection::SpeakerQuotes => "ציטוטים",
+    }
+}
 
 pub fn format_label(format: ExportFormat) -> &'static str {
     match format {
@@ -337,6 +362,22 @@ mod tests {
             "שלום (עולם) שלום",
             "אנחנו לומדים C-Sharp במערכת .NET,",
             "הרצאת מבוא לקורס C# .NET (סי-שארפ).mp3",
+        ] {
+            assert_eq!(rtl(&rtl(text)), text, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_segment_survives_a_trip_through_the_editor_field() {
+        // The editing field in the transcript holds visual order, so the text
+        // that reaches the backend is `rtl` of what the field gives back. A
+        // sentence that did not survive that pair would be saved scrambled.
+        for text in [
+            "אז נתחיל: שלושה נושאים להיום, בסדר?",
+            "הפגישה נקבעה ל-15 בדצמבר 2026, בשעה 09:30.",
+            "זה עלה 1,250 ש\"ח — כולל מע\"מ (17%).",
+            "הוא אמר \"לא יודע\", ואז הוסיף: אולי מחר.",
+            "שלחו את הקובץ ל-adam@example.com בבקשה",
         ] {
             assert_eq!(rtl(&rtl(text)), text, "{text}");
         }

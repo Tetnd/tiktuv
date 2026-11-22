@@ -2,19 +2,19 @@
 
 ## Process model
 
-Tiktuv is three processes on one machine, and nothing leaves it.
+Tiktuv is two processes of its own on one machine — the application and the
+backend it starts — plus FFmpeg, and nothing leaves the machine.
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│ Tauri shell (Rust)                                          │
+│ Desktop app — Rust, gpui-kit, drawn on the GPU              │
 │  · spawns and supervises the backend                        │
 │  · reads runtime.json → { port, token }                     │
-│  · hands them to the web view via the `connection` command  │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │ WebView — React + TypeScript, dir="rtl"               │  │
-│  │  fetch  → http://127.0.0.1:8756  (Bearer <token>)     │  │
-│  │  SSE    → /api/events?token=…                         │  │
-│  └───────────────────────────────────────────────────────┘  │
+│  · reqwest → http://127.0.0.1:8756  (Bearer <token>)        │
+│  · SSE     → /api/events?token=…                            │
+│  · reorders Hebrew itself: gpui shapes left-to-right only,  │
+│    so text passes through the bidi algorithm before it is   │
+│    handed to the renderer (src/rtl_text.rs)                 │
 └─────────────────────────────────────────────────────────────┘
                               │ stdout: "TIKTUV_READY <path>"
                               ▼
@@ -48,7 +48,7 @@ Hugging Face download the user explicitly triggers.
 | Media | `tiktuv/media/` | ffprobe validation, streaming decode |
 | Text | `tiktuv/text/` | Hebrew post-processing, subtitle shaping |
 | Export | `tiktuv/exports/` | TXT, DOCX, PDF, SRT, VTT, JSON |
-| Contracts | `tiktuv/schemas.py` | Pydantic models, mirrored in `packages/shared-types` |
+| Contracts | `tiktuv/schemas.py` | Pydantic models, mirrored by hand in `apps/desktop-gpui/src/models.rs` |
 
 Dependencies point inwards. `exports/` does not know about jobs; `asr/` does
 not know about HTTP; `api/` holds no algorithm.
@@ -188,7 +188,7 @@ transcription. Files are cheap to write atomically and trivially recoverable.
 **Logical-order text everywhere except PDF painting.** Reversing strings
 produces files that look correct in exactly one viewer and are broken
 everywhere else, and it destroys copy-paste and search. The Unicode
-bidirectional algorithm does the work in the browser and in Word. PDF is the
+bidirectional algorithm does the work in Word. PDF is the
 one format with no bidi engine, so `pdf_export.py` runs the algorithm itself —
 wrapping lines in logical order first, then converting each finished line to
 visual order. That single exception is documented at length in that file.

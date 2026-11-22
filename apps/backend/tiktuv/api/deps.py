@@ -29,8 +29,8 @@ def require_token(
 ) -> None:
     """Validate the per-session bearer token.
 
-    The token is generated at startup and handed to the frontend by the desktop
-    shell. It stops any other local process — including a random web page in
+    The token is generated at startup and read by the desktop app from the
+    handshake file. It stops any other local process — including a random web page in
     the user's browser — from driving the API, which can read and write files.
     """
     state = get_state(request)

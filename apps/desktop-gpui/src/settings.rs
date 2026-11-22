@@ -53,6 +53,7 @@ impl App {
         let punctuation = self.settings.normalize_punctuation;
         let auto_download = self.settings.auto_download_model;
         let diarization = self.settings.enable_diarization;
+        let proofreading = self.settings.enable_proofreading;
 
         div()
             .v_flex()
@@ -129,6 +130,13 @@ impl App {
                 diarization,
                 cx,
                 |this, v| this.settings.enable_diarization = v,
+            ))
+            .child(toggle(
+                "proofreading",
+                "הגהה חכמה בעזרת DeepSeek (דורש מפתח API)",
+                proofreading,
+                cx,
+                |this, v| this.settings.enable_proofreading = v,
             ))
             .into_any_element()
     }

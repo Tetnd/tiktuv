@@ -1,4 +1,4 @@
-//! Supervises the Python backend, mirroring `apps/desktop/src-tauri/src/backend.rs`.
+//! Supervises the Python backend.
 //!
 //! The shell spawns the backend as a child process, waits for it to print its
 //! `TIKTUV_READY <path>` handshake line, reads the port and session token from

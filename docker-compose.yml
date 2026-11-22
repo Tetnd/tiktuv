@@ -3,8 +3,8 @@
 # The desktop application runs the backend as a local process — see the README.
 # This file exists for two narrow cases:
 #
-#   1. Running the backend on a Linux box with a GPU and driving it from a
-#      browser on the same machine.
+#   1. Running the backend on a Linux box with a GPU and driving it over HTTP
+#      from the desktop app or a script on the same machine.
 #   2. Reproducing a bug in a clean environment.
 #
 # It is deliberately loopback-only. Publishing this port to a network would
@@ -14,8 +14,8 @@
 #   docker compose up backend          # CPU
 #   docker compose --profile gpu up backend-gpu
 #
-# The token is printed in the backend's startup log; pass it to the frontend as
-# VITE_TIKTUV_TOKEN.
+# The token is printed in the backend's startup log; send it as a bearer token
+# on every request.
 
 services:
   backend:
