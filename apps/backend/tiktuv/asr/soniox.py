@@ -8,6 +8,11 @@ Soniox project API key, and sends audio to Soniox's servers. It still
 implements the :class:`~tiktuv.asr.base.Transcriber` protocol, so the rest of
 the pipeline — chunking, overlap repair, persistence and exports — works
 unchanged. Each pipeline window becomes one Soniox upload.
+
+Soniox numbers speakers per request, so the backend asks the pipeline for long
+windows (see :attr:`SonioxTranscriber.preferred_window_seconds`): fewer
+requests means fewer places where speaker numbering can drift, and the
+pipeline links the remaining seams through the shared overlap audio.
 """
 
 from __future__ import annotations
@@ -38,6 +43,23 @@ SONIOX_API_BASE = "https://api.soniox.com/v1"
 _POLL_INTERVAL_SECONDS = 2.0
 _MAX_POLL_SECONDS = 3600.0
 _MIN_SEGMENT_SECONDS = 0.2
+
+#: Soniox accepts up to 300 minutes per file. One hour keeps an upload around
+#: 115 MB of 16 kHz PCM while covering most recordings in a single request,
+#: so speaker numbering stays consistent end to end.
+SONIOX_WINDOW_SECONDS = 3600.0
+#: A generous overlap gives the pipeline enough shared speech to match the
+#: speakers of one window to the next.
+SONIOX_OVERLAP_SECONDS = 30.0
+
+#: A segment is closed after a silence this long, even mid-sentence.
+_MAX_PAUSE_SECONDS = 1.5
+#: ...or once it grows this long, so subtitle cues stay readable.
+_MAX_SEGMENT_SECONDS = 20.0
+#: Control tokens such as ``<end>`` carry no transcript text.
+_CONTROL_TOKEN = re.compile(r"^<\w+>$")
+#: Punctuation that ends a sentence when it closes a word.
+_SENTENCE_END = (".", "!", "?", "׃", "…")
 
 #: Sentence-final punctuation after which a new segment starts.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?׃…])\s+")
@@ -81,6 +103,14 @@ class SonioxTranscriber:
     def device(self) -> str:
         return "cloud"
 
+    @property
+    def preferred_window_seconds(self) -> float:
+        return SONIOX_WINDOW_SECONDS
+
+    @property
+    def preferred_overlap_seconds(self) -> float:
+        return SONIOX_OVERLAP_SECONDS
+
     def transcribe(self, request: TranscribeRequest) -> TranscribeResult:
         samples = np.asarray(request.samples, dtype=np.float32)
         if samples.size == 0:
@@ -94,12 +124,17 @@ class SonioxTranscriber:
         try:
             transcription_id = self._create(file_id, request.settings)
             text, tokens = self._await_result(transcription_id)
-            segments = _segments_from_text(
-                text, tokens, window_duration=window_duration, settings=request.settings
+            segments = _segments_from_tokens(
+                tokens, window_duration=window_duration, settings=request.settings
             )
-            turns = _speaker_turns(tokens)
-            if segments and turns:
-                segments = assign_speakers(segments, turns)
+            if not segments:
+                # No usable token timings: fall back to spreading the text.
+                segments = _segments_from_text(
+                    text, tokens, window_duration=window_duration, settings=request.settings
+                )
+                turns = _speaker_turns(tokens)
+                if segments and turns:
+                    segments = assign_speakers(segments, turns)
             return TranscribeResult(segments=segments, language=_language_code(request.settings))
         finally:
             self._cleanup(transcription_id, file_id)
@@ -274,6 +309,111 @@ def _segments_from_text(
                 words=_spread_words(sentence, start, end) if want_words else [],
             )
         )
+    return segments
+
+
+@dataclass(frozen=True, slots=True)
+class _TokenWord:
+    text: str
+    start: float
+    end: float
+    speaker: str | None
+
+
+def _words_from_tokens(tokens: list[_Token]) -> list[_TokenWord]:
+    """Join Soniox's sub-word tokens back into words.
+
+    Concatenating token texts reproduces the transcript, and a token that
+    begins a new word carries the leading space — that is the word boundary.
+    """
+    words: list[_TokenWord] = []
+    pieces: list[str] = []
+    start = end = 0.0
+    speaker: str | None = None
+
+    def flush() -> None:
+        text = "".join(pieces).strip()
+        if text:
+            words.append(_TokenWord(text=text, start=start, end=end, speaker=speaker))
+        pieces.clear()
+
+    for token in tokens:
+        if _CONTROL_TOKEN.match(token.text.strip()):
+            continue
+        starts_word = not pieces or token.text[:1].isspace()
+        # A speaker change mid-word is a Soniox artefact; keep the word whole
+        # and let its first piece decide the speaker.
+        if starts_word:
+            flush()
+            start = token.start
+            speaker = token.speaker
+        pieces.append(token.text)
+        end = token.end if starts_word else max(end, token.end)
+    flush()
+    return words
+
+
+def _segments_from_tokens(
+    tokens: list[_Token],
+    *,
+    window_duration: float,
+    settings: TranscriptionSettings,
+) -> list[Segment]:
+    """Build segments on Soniox's real token timings.
+
+    A new segment starts whenever the speaker changes, so each line belongs
+    to exactly one person, and also after sentence-final punctuation, a long
+    pause, or once a segment gets too long. Returns ``[]`` when the tokens
+    carry no usable timings, so the caller can fall back to the text.
+    """
+    words = _words_from_tokens(tokens)
+    if not words or all(word.end <= 0.0 for word in words):
+        return []
+
+    want_words = settings.timestamps is TimestampMode.WORD
+    limit = window_duration if window_duration > 0 else None
+    segments: list[Segment] = []
+    current: list[_TokenWord] = []
+
+    def close() -> None:
+        if not current:
+            return
+        start = max(0.0, current[0].start)
+        end = max(current[-1].end, start + _MIN_SEGMENT_SECONDS)
+        if limit is not None:
+            end = min(end, max(limit, start + _MIN_SEGMENT_SECONDS))
+        segments.append(
+            Segment(
+                id=len(segments),
+                start=start,
+                end=end,
+                text=" ".join(word.text for word in current),
+                speaker=current[0].speaker,
+                words=(
+                    [
+                        Word(text=word.text, start=word.start, end=max(word.end, word.start))
+                        for word in current
+                    ]
+                    if want_words
+                    else []
+                ),
+            )
+        )
+        current.clear()
+
+    for word in words:
+        if current:
+            previous = current[-1]
+            if (
+                word.speaker != previous.speaker
+                or word.start - previous.end > _MAX_PAUSE_SECONDS
+                or word.end - current[0].start > _MAX_SEGMENT_SECONDS
+            ):
+                close()
+        current.append(word)
+        if word.text.endswith(_SENTENCE_END):
+            close()
+    close()
     return segments
 
 

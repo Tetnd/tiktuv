@@ -19,12 +19,19 @@ from ..asr.chunking import TranscriptAccumulator, shift_segments
 from ..asr.downloader import ModelDownloader
 from ..asr.registry import ModelManager, is_downloaded, use_mock_backend
 from ..config import Settings
-from ..diarization import assign_speakers, build_speaker_map, get_backend
+from ..credentials import DeepSeekCredentials
+from ..diarization import (
+    assign_speakers,
+    build_speaker_map,
+    get_backend,
+    link_window_speakers,
+)
 from ..errors import ErrorCode, JobCancelled, ModelError, ResourceError, TiktuvError
 from ..exports import export_transcript
 from ..logging_conf import get_logger
 from ..media.audio import AudioArray, CancelToken, estimate_window_count, iter_windows
 from ..media.ffmpeg import FFmpegTools, locate_tools
+from ..proofread import PROOFREAD_MODEL, proofread_segments
 from ..schemas import (
     ExportFormat,
     JobDetail,
@@ -46,8 +53,11 @@ STAGE_WEIGHTS: dict[JobStage, tuple[float, float]] = {
     # is instantaneous, so it costs the progress bar almost nothing.
     JobStage.DOWNLOADING_MODEL: (0.02, 0.03),
     JobStage.LOADING_MODEL: (0.03, 0.10),
-    JobStage.TRANSCRIBING: (0.10, 0.88),
-    JobStage.DIARIZING: (0.88, 0.92),
+    JobStage.TRANSCRIBING: (0.10, 0.80),
+    JobStage.DIARIZING: (0.80, 0.84),
+    # Proofreading is one network round-trip per ~40 segments against a
+    # reasoning model, so on a long recording it is minutes, not seconds.
+    JobStage.PROOFREADING: (0.84, 0.92),
     JobStage.GENERATING_SUBTITLES: (0.92, 0.94),
     JobStage.EXPORTING: (0.94, 1.00),
 }
@@ -80,12 +90,14 @@ class TranscriptionPipeline:
         *,
         tools: FFmpegTools | None = None,
         downloader: ModelDownloader | None = None,
+        deepseek: DeepSeekCredentials | None = None,
     ) -> None:
         self._settings = settings
         self._models = model_manager
         self._transcripts = transcripts
         self._tools = tools
         self._downloader = downloader
+        self._deepseek = deepseek
 
     def _ensure_tools(self) -> FFmpegTools:
         if self._tools is None:
@@ -127,7 +139,12 @@ class TranscriptionPipeline:
 
         # -- 4. transcribe ----------------------------------------------
         duration = job.duration
-        accumulator = TranscriptAccumulator(overlap_seconds=self._settings.window_overlap_seconds)
+        # A transcriber may ask for its own window size: Soniox numbers
+        # speakers per request, so it wants long windows with a wide overlap.
+        window_seconds, overlap_seconds = _window_plan(
+            transcriber, self._settings.window_seconds, self._settings.window_overlap_seconds
+        )
+        accumulator = TranscriptAccumulator(overlap_seconds=overlap_seconds)
 
         # Anything already committed before the crash is reloaded, so a resumed
         # job keeps its earlier text instead of transcribing it twice.
@@ -150,8 +167,8 @@ class TranscriptionPipeline:
             1,
             estimate_window_count(
                 duration,
-                self._settings.window_seconds,
-                self._settings.window_overlap_seconds,
+                window_seconds,
+                overlap_seconds,
                 resume_from,
             ),
         )
@@ -163,8 +180,8 @@ class TranscriptionPipeline:
             media_path,
             tools,
             sample_rate=self._settings.sample_rate,
-            window_seconds=self._settings.window_seconds,
-            overlap_seconds=self._settings.window_overlap_seconds,
+            window_seconds=window_seconds,
+            overlap_seconds=overlap_seconds,
             start_at=resume_from,
             total_duration=duration,
             cancel=cancel,
@@ -184,6 +201,14 @@ class TranscriptionPipeline:
             # Window-relative timestamps become absolute here; everything
             # downstream works on the source timeline.
             absolute = shift_segments(result.segments, window.start)
+            # Keep speaker ids stable across windows by matching who speaks
+            # in the audio both windows share.
+            absolute = link_window_speakers(
+                absolute,
+                accumulator.segments(),
+                overlap_start=window.start,
+                overlap_end=window.start + window.overlap_lead,
+            )
             accumulator.add_window(
                 absolute, window_start=window.start, overlap_lead=window.overlap_lead
             )
@@ -230,6 +255,11 @@ class TranscriptionPipeline:
         # whichever source produced speakers.
         speakers = speakers or build_speaker_map(segments)
 
+        # -- 7. proofreading ------------------------------------------------
+        segments, proofread_model, corrections = self._proofread(
+            segments, speakers, settings, cancel=cancel, on_progress=on_progress
+        )
+
         transcript = Transcript(
             job_id=job.id,
             language=language,
@@ -239,10 +269,12 @@ class TranscriptionPipeline:
             speakers=speakers,
             partial=False,
             created_at=started,
+            proofread_model=proofread_model,
+            proofread_corrections=corrections,
         )
         self._transcripts.save(transcript)
 
-        # -- 7. exports ---------------------------------------------------
+        # -- 8. exports ---------------------------------------------------
         exports = self._export(job, transcript, settings, on_progress=on_progress)
 
         on_progress(JobStage.DONE, 1.0, duration, None)
@@ -360,6 +392,83 @@ class TranscriptionPipeline:
         on_progress(JobStage.DIARIZING, stage_progress(JobStage.DIARIZING, 1.0), 0.0, None)
         return segments, speakers
 
+    def _proofread(
+        self,
+        segments: list[Segment],
+        speakers: dict[str, str],
+        settings: TranscriptionSettings,
+        *,
+        cancel: CancelToken,
+        on_progress: ProgressCallback,
+    ) -> tuple[list[Segment], str, int]:
+        """Let DeepSeek correct transcription mistakes, if it can.
+
+        Never fatal. A transcription that took an hour must not be thrown away
+        because a proofreading call timed out or the key is missing, so every
+        failure here degrades to the raw text plus a warning in the log and on
+        the progress line.
+        """
+        if not settings.enable_proofreading or not segments:
+            return segments, "", 0
+
+        api_key = self._deepseek.get() if self._deepseek is not None else None
+        if not api_key:
+            log.warning("proofreading requested but no DeepSeek API key is configured")
+            on_progress(
+                JobStage.PROOFREADING,
+                stage_progress(JobStage.PROOFREADING, 1.0),
+                0.0,
+                "הגהה דילגה — מפתח DeepSeek אינו מוגדר",
+            )
+            return segments, "", 0
+
+        model = settings.proofread_model.strip() or PROOFREAD_MODEL
+        on_progress(
+            JobStage.PROOFREADING,
+            stage_progress(JobStage.PROOFREADING, 0.02),
+            0.0,
+            "מגיה את התמליל",
+        )
+
+        def report(done: int, total: int) -> None:
+            on_progress(
+                JobStage.PROOFREADING,
+                stage_progress(JobStage.PROOFREADING, done / max(1, total)),
+                0.0,
+                f"מגיה את התמליל — {done}/{total}",
+            )
+
+        try:
+            corrected, changed = proofread_segments(
+                api_key,
+                segments,
+                speakers,
+                model=model,
+                vocabulary=settings.vocabulary_prompt,
+                on_progress=report,
+                should_cancel=lambda: cancel.cancelled,
+            )
+        except TiktuvError as exc:
+            log.warning("proofreading failed", extra={"error": str(exc), "code": exc.code.value})
+            on_progress(
+                JobStage.PROOFREADING,
+                stage_progress(JobStage.PROOFREADING, 1.0),
+                0.0,
+                "הגהה נכשלה — התמליל נשמר ללא תיקונים",
+            )
+            return segments, "", 0
+
+        # Cancellation during proofreading stops the batches but keeps what
+        # came back; the job is cancelled by the check that follows.
+        cancel.raise_if_cancelled()
+        on_progress(
+            JobStage.PROOFREADING,
+            stage_progress(JobStage.PROOFREADING, 1.0),
+            0.0,
+            f"הגהה הושלמה — {changed} תיקונים" if changed else "הגהה הושלמה — ללא תיקונים",
+        )
+        return corrected, model, changed
+
     def _export(
         self,
         job: JobDetail,
@@ -428,3 +537,16 @@ __all__ = [
     "import_media_file",
     "stage_progress",
 ]
+
+
+def _window_plan(
+    transcriber: object, default_window: float, default_overlap: float
+) -> tuple[float, float]:
+    """Window and overlap length for ``transcriber``, falling back to config."""
+    window = getattr(transcriber, "preferred_window_seconds", None) or default_window
+    overlap = getattr(transcriber, "preferred_overlap_seconds", None)
+    if overlap is None:
+        overlap = default_overlap
+    if not 0 <= overlap < window:
+        return default_window, default_overlap
+    return float(window), float(overlap)

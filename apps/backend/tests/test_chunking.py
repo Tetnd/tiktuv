@@ -247,3 +247,46 @@ class TestClampWords:
     def test_leaves_a_segment_without_words_alone(self) -> None:
         segment = seg(1.0, 3.0, "שלום")
         assert clamp_words_to_segment(segment) is segment
+
+
+def test_segment_merged_differently_across_seam_is_not_lost() -> None:
+    """Real Soniox case: window 1 split a passage in two, window 2 merged it.
+
+    The merged segment's centre falls before the seam and window 1's second
+    piece's centre after it, so a naive seam dropped that speech entirely.
+    """
+    from tiktuv.asr.chunking import TranscriptAccumulator
+    from tiktuv.schemas import Segment
+
+    def seg(start: float, end: float, text: str) -> Segment:
+        return Segment(id=0, start=start, end=end, text=text)
+
+    accumulator = TranscriptAccumulator(overlap_seconds=30.0)
+    accumulator.add_window(
+        [
+            seg(287.55, 294.99, "ודיברנו גם שלכל פחת"),
+            seg(295.11, 299.67, "ודיברנו שמפסק פחת כזה צריך להיות מוגן, בסדר?"),
+            seg(299.79, 302.79, "עד עוצמת זרמים של 6 קילו אמפר."),
+            seg(303.39, 303.87, "זה מהלך."),
+        ],
+        window_start=0.0,
+        overlap_lead=0.0,
+    )
+    accumulator.add_window(
+        [
+            seg(285.33, 295.05, "ודיברנו גם שלכל פחת"),
+            seg(
+                295.11,
+                302.79,
+                "ודיברנו שמפסק פחת כזה צריך להיות מוגן, בסדר, עד עוצמת זרמים של 6 קילו אמפר.",
+            ),
+            seg(303.39, 303.87, "במהלך—"),
+        ],
+        window_start=285.0,
+        overlap_lead=30.0,
+    )
+    texts = [s.text for s in accumulator.segments()]
+    joined = " ".join(texts)
+    assert "6 קילו אמפר" in joined
+    assert joined.count("ודיברנו שמפסק") == 1
+    assert joined.count("ודיברנו גם") == 1

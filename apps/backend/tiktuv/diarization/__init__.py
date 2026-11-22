@@ -113,6 +113,91 @@ def build_speaker_map(segments: list[Segment]) -> dict[str, str]:
     return {speaker: default_speaker_label(index) for index, speaker in enumerate(order)}
 
 
+def link_window_speakers(
+    incoming: list[Segment],
+    previous: list[Segment],
+    *,
+    overlap_start: float,
+    overlap_end: float,
+) -> list[Segment]:
+    """Rename one window's speaker ids so they match the windows before it.
+
+    A cloud transcriber numbers speakers per request, so "1" in one window
+    need not be "1" in the next. Both windows transcribed the shared overlap
+    audio, so whoever speaks there in the new window is matched to whoever
+    the earlier windows heard at the same moment (greedy, by seconds of
+    shared speech, one-to-one). A speaker with no match takes over an earlier
+    speaker nobody in this window claimed; only when none is left does it get
+    a fresh id that collides with nothing already used.
+    """
+    local_ids = _ordered_speakers(incoming)
+    if not local_ids:
+        return incoming
+
+    shared: dict[tuple[str, str], float] = {}
+    if overlap_end > overlap_start:
+        for new in incoming:
+            if not new.speaker:
+                continue
+            for old in previous:
+                if not old.speaker:
+                    continue
+                lo = max(new.start, old.start, overlap_start)
+                hi = min(new.end, old.end, overlap_end)
+                if hi > lo:
+                    key = (new.speaker, old.speaker)
+                    shared[key] = shared.get(key, 0.0) + (hi - lo)
+
+    mapping: dict[str, str] = {}
+    taken: set[str] = set()
+    for (local, known), _seconds in sorted(shared.items(), key=lambda kv: -kv[1]):
+        if local in mapping or known in taken:
+            continue
+        mapping[local] = known
+        taken.add(known)
+
+    # A speaker silent during the overlap is most likely someone already
+    # heard, not a newcomer: reuse unclaimed earlier speakers, most recently
+    # active first, before minting a new id.
+    last_heard: dict[str, float] = {}
+    for old in previous:
+        if old.speaker:
+            last_heard[old.speaker] = max(last_heard.get(old.speaker, 0.0), old.end)
+    reusable = [
+        known
+        for known, _end in sorted(last_heard.items(), key=lambda kv: -kv[1])
+        if known not in taken
+    ]
+
+    used = set(last_heard) | taken
+    next_index = 1
+    for local in local_ids:
+        if local in mapping:
+            continue
+        if reusable:
+            mapping[local] = reusable.pop(0)
+            continue
+        while str(next_index) in used:
+            next_index += 1
+        mapping[local] = str(next_index)
+        used.add(mapping[local])
+
+    return [
+        segment.model_copy(update={"speaker": mapping[segment.speaker]})
+        if segment.speaker
+        else segment
+        for segment in incoming
+    ]
+
+
+def _ordered_speakers(segments: list[Segment]) -> list[str]:
+    order: list[str] = []
+    for segment in segments:
+        if segment.speaker and segment.speaker not in order:
+            order.append(segment.speaker)
+    return order
+
+
 __all__ = [
     "DiarizationBackend",
     "SpeakerTurn",
@@ -121,5 +206,6 @@ __all__ = [
     "default_speaker_label",
     "get_backend",
     "is_available",
+    "link_window_speakers",
     "register_backend",
 ]

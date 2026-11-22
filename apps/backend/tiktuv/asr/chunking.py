@@ -26,6 +26,8 @@ log = get_logger("asr.chunking")
 MAX_DEDUPE_TOKENS = 24
 #: Below this, a "match" is more likely to be a common word than a real repeat.
 MIN_DEDUPE_TOKENS = 2
+#: Timestamps from two windows differ by a few tens of milliseconds.
+_SEAM_TOLERANCE = 0.25
 
 _NIQQUD = re.compile(r"[֑-ׇ]")
 _NON_WORD = re.compile(r"[^\w֐-׿]+", re.UNICODE)
@@ -162,6 +164,20 @@ class TranscriptAccumulator:
         # window; everything after belongs to the new one.
         head = [s for s in self._segments if _center(s) < cut]
         tail = [s for s in incoming if _center(s) >= cut]
+
+        # The two windows may split the overlap differently: the new window
+        # can merge into one segment (centre before the seam) speech the old
+        # window kept as a separate segment (centre after it). Both sides
+        # would then drop it. Keep such a straddling segment and let it
+        # replace the head segments it covers.
+        head_end = max((s.end for s in head), default=cut)
+        straddlers = [
+            s for s in incoming if _center(s) < cut and s.end > head_end + _SEAM_TOLERANCE
+        ]
+        if straddlers:
+            first_start = min(s.start for s in straddlers)
+            head = [s for s in head if s.start < first_start - _SEAM_TOLERANCE]
+            tail = sorted(straddlers + tail, key=lambda s: (s.start, s.end))
 
         dropped = len(self._segments) - len(head) + len(incoming) - len(tail)
 

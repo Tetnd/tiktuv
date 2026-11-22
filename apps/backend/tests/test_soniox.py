@@ -13,6 +13,7 @@ from tiktuv.asr.soniox import (
     SonioxTranscriber,
     _encode_wav,
     _segments_from_text,
+    _segments_from_tokens,
     _speaker_turns,
     _Token,
 )
@@ -91,6 +92,60 @@ def test_segments_word_mode_attaches_words() -> None:
 
     assert len(segments) == 1
     assert [w.text for w in segments[0].words] == ["שלום", "עולם."]
+
+
+def _tok(text: str, start: float, end: float, speaker: str | None = "1") -> _Token:
+    return _Token(text, start, end, None, speaker=speaker)
+
+
+def test_segments_from_tokens_use_real_timings_and_split_on_speaker() -> None:
+    settings = TranscriptionSettings(timestamps=TimestampMode.WORD)
+    tokens = [
+        _tok("של", 0.5, 0.7),
+        _tok("ום", 0.7, 0.9),
+        _tok(" לכולם", 1.0, 1.6),
+        # Speaker 2 answers without any sentence punctuation in between.
+        _tok(" מה", 2.0, 2.2, "2"),
+        _tok(" נשמע?", 2.3, 2.9, "2"),
+        _tok(" טוב", 3.0, 3.4, "1"),
+    ]
+    segments = _segments_from_tokens(tokens, window_duration=10.0, settings=settings)
+
+    assert [(s.text, s.speaker) for s in segments] == [
+        ("שלום לכולם", "1"),
+        ("מה נשמע?", "2"),
+        ("טוב", "1"),
+    ]
+    assert segments[0].start == pytest.approx(0.5)
+    assert segments[0].end == pytest.approx(1.6)
+    assert segments[1].start == pytest.approx(2.0)
+    assert [w.text for w in segments[0].words] == ["שלום", "לכולם"]
+    assert segments[0].words[0].end == pytest.approx(0.9)
+
+
+def test_segments_from_tokens_split_on_sentence_and_long_pause() -> None:
+    settings = TranscriptionSettings(timestamps=TimestampMode.SEGMENT)
+    tokens = [
+        _tok("אחת.", 0.0, 0.5),
+        _tok(" שתיים", 0.6, 1.0),
+        _tok(" שלוש", 4.0, 4.5),
+        _tok("<end>", 4.5, 4.5),
+    ]
+    segments = _segments_from_tokens(tokens, window_duration=10.0, settings=settings)
+    assert [s.text for s in segments] == ["אחת.", "שתיים", "שלוש"]
+    assert all(not s.words for s in segments)
+
+
+def test_segments_from_tokens_without_timings_returns_empty() -> None:
+    settings = TranscriptionSettings()
+    tokens = [_tok("שלום", 0.0, 0.0)]
+    assert _segments_from_tokens(tokens, window_duration=5.0, settings=settings) == []
+
+
+def test_soniox_prefers_long_windows() -> None:
+    transcriber, _client = _make_transcriber([])
+    assert transcriber.preferred_window_seconds > 300
+    assert 0 < transcriber.preferred_overlap_seconds < transcriber.preferred_window_seconds
 
 
 # --------------------------------------------------------------------------
