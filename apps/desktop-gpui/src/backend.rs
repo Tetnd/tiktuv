@@ -78,19 +78,20 @@ fn exe_dir() -> Option<PathBuf> {
         .map(|path| path.to_path_buf())
 }
 
+/// The frozen backend of a packaged build: `engine\tiktuv-backend.exe` (a
+/// folder build, which starts in a second or two), or beside the exe.
+fn sidecar_path() -> Option<PathBuf> {
+    let dir = exe_dir()?;
+    let name = if cfg!(windows) { "tiktuv-backend.exe" } else { "tiktuv-backend" };
+    [dir.join("engine").join(name), dir.join(name)]
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
 /// True when this is a packaged build: a frozen backend sidecar sits next to
 /// the executable, so everything (backend, data, models, FFmpeg) lives beside it.
 fn is_portable() -> bool {
-    exe_dir()
-        .map(|dir| {
-            dir.join(if cfg!(windows) {
-                "tiktuv-backend.exe"
-            } else {
-                "tiktuv-backend"
-            })
-            .is_file()
-        })
-        .unwrap_or(false)
+    sidecar_path().is_some()
 }
 
 /// Data directory for a packaged build — inside the folder, so the app is
@@ -140,15 +141,8 @@ impl BackendProcess {
     /// development virtualenv (`<repo>/.venv/Scripts/python.exe -m tiktuv`).
     fn executable() -> Option<(PathBuf, Vec<String>)> {
         // Packaged build: a frozen backend sidecar next to this executable.
-        if let Some(dir) = exe_dir() {
-            let sidecar = dir.join(if cfg!(windows) {
-                "tiktuv-backend.exe"
-            } else {
-                "tiktuv-backend"
-            });
-            if sidecar.is_file() {
-                return Some((sidecar, vec![]));
-            }
+        if let Some(sidecar) = sidecar_path() {
+            return Some((sidecar, vec![]));
         }
 
         // Development: an explicit override.

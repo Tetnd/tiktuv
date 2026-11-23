@@ -60,8 +60,9 @@ $venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path $venvPython)) { throw 'Run scripts\setup.ps1 first.' }
 
 # -- 1. freeze the backend --------------------------------------------------
-$backendExe = Join-Path $repoRoot 'build\rust-portable\tiktuv-backend.exe'
-New-Item -ItemType Directory -Force -Path (Split-Path $backendExe) | Out-Null
+$backendDir = Join-Path $repoRoot 'build\rust-portable\tiktuv-backend'
+$backendExe = Join-Path $backendDir 'tiktuv-backend.exe'
+New-Item -ItemType Directory -Force -Path (Split-Path $backendDir) | Out-Null
 
 if (-not $SkipBackendFreeze) {
     Write-Step 'Freezing the Python backend with PyInstaller'
@@ -71,9 +72,9 @@ if (-not $SkipBackendFreeze) {
     # freeze_entry.py is the entry point: tiktuv/__main__.py uses relative
     # imports, which fail when PyInstaller runs it as a top-level __main__.
     & $venvPython -m PyInstaller `
-        --noconfirm --clean --onefile `
+        --noconfirm --clean --onedir `
         --name tiktuv-backend `
-        --distpath (Split-Path $backendExe) `
+        --distpath (Split-Path $backendDir) `
         --workpath (Join-Path $repoRoot 'build\pyinstaller') `
         --specpath (Join-Path $repoRoot 'build') `
         --collect-all tiktuv `
@@ -89,7 +90,7 @@ if (-not $SkipBackendFreeze) {
 }
 
 if (-not (Test-Path $backendExe)) { throw "Frozen backend not found at $backendExe" }
-Write-Host "    backend: $([math]::Round((Get-Item $backendExe).Length / 1MB, 1)) MB"
+Write-Host "    backend: $([math]::Round((Get-ChildItem $backendDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)) MB"
 
 # -- 2. build the Rust shell ------------------------------------------------
 $rustExe = Join-Path $repoRoot 'apps\desktop-gpui\target\release\tiktuv-desktop.exe'
@@ -110,7 +111,7 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path (Join-Path $stage 'tools') | Out-Null
 
 Copy-Item $rustExe (Join-Path $stage 'Tiktuv.exe')
-Copy-Item $backendExe (Join-Path $stage 'tiktuv-backend.exe')
+Copy-Item $backendDir (Join-Path $stage 'engine') -Recurse
 
 # FFmpeg: the local install first, then a download.
 $ffmpeg = (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue).Source
@@ -146,7 +147,7 @@ the only step that touches the network.
 What's in here
 --------------
   Tiktuv.exe          the app — double-click this
-  tiktuv-backend.exe  the transcription engine (started automatically)
+  engine\             the transcription engine (started by Tiktuv.exe; leave it alone)
   tools\              FFmpeg
   data\               your jobs, transcripts, exports, logs (created on first run)
   models\             the speech model (downloaded on first use)
