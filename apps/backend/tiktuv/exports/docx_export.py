@@ -20,11 +20,10 @@ from typing import Any, cast
 from docx import Document
 from docx.document import Document as DocumentObject
 from docx.enum.section import WD_SECTION
-from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt, RGBColor
+from docx.shared import Cm, Pt, RGBColor
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 from docx.text.run import Run
@@ -42,37 +41,71 @@ BODY_SIZE_PT = 12
 TIMESTAMP_SIZE_PT = 9
 
 
-def _set(element: object, tag: str, value: str = "1") -> None:
+# Word is strict about child order inside ``pPr``/``rPr``/``tblPr``/``sectPr``:
+# an element in the wrong place is ignored or the file is flagged as corrupt.
+# Each tuple lists the elements that must come *after* the one being inserted.
+_PPR_AFTER = (
+    "w:adjustRightInd", "w:snapToGrid", "w:spacing", "w:ind", "w:contextualSpacing",
+    "w:mirrorIndents", "w:suppressOverlap", "w:jc", "w:textDirection",
+    "w:textAlignment", "w:textboxTightWrap", "w:outlineLvl", "w:divId",
+    "w:cnfStyle", "w:rPr", "w:sectPr", "w:pPrChange",
+)
+_RPR_RTL_AFTER = ("w:cs", "w:em", "w:lang", "w:eastAsianLayout", "w:specVanish", "w:oMath")
+_RPR_SZCS_AFTER = (
+    "w:highlight", "w:u", "w:effect", "w:bdr", "w:shd", "w:fitText", "w:vertAlign",
+    "w:rtl", *_RPR_RTL_AFTER,
+)
+_RPR_BCS_AFTER = (
+    "w:i", "w:iCs", "w:caps", "w:smallCaps", "w:strike", "w:dstrike", "w:outline",
+    "w:shadow", "w:emboss", "w:imprint", "w:noProof", "w:snapToGrid", "w:vanish",
+    "w:webHidden", "w:color", "w:spacing", "w:w", "w:kern", "w:position", "w:sz",
+    "w:szCs", *_RPR_SZCS_AFTER,
+)
+_RPR_LANG_AFTER = ("w:eastAsianLayout", "w:specVanish", "w:oMath")
+_TBLPR_BIDI_AFTER = (
+    "w:tblStyleRowBandSize", "w:tblStyleColBandSize", "w:tblW", "w:jc",
+    "w:tblCellSpacing", "w:tblInd", "w:tblBorders", "w:shd", "w:tblLayout",
+    "w:tblCellMar", "w:tblLook", "w:tblCaption", "w:tblDescription",
+)
+_SECTPR_BIDI_AFTER = ("w:rtlGutter", "w:docGrid", "w:printerSettings", "w:sectPrChange")
+
+
+def _put(parent: Any, tag: str, after: tuple[str, ...], value: str | None = "1") -> Any:
+    """Insert ``<tag w:val=value>`` at its schema position, replacing any old one."""
+    for existing in parent.findall(qn(tag)):
+        parent.remove(existing)
     child = OxmlElement(tag)
-    child.set(qn("w:val"), value)
-    element.append(child)  # type: ignore[attr-defined]
+    if value is not None:
+        child.set(qn("w:val"), value)
+    parent.insert_element_before(child, *after)
+    return child
 
 
 def set_section_rtl(section: object) -> None:
     """Make the section right-to-left (affects tables and columns)."""
-    sect_pr = section._sectPr  # type: ignore[attr-defined]
-    for existing in sect_pr.findall(qn("w:bidi")):
-        sect_pr.remove(existing)
-    _set(sect_pr, "w:bidi")
+    _put(section._sectPr, "w:bidi", _SECTPR_BIDI_AFTER)  # type: ignore[attr-defined]
 
 
 def set_paragraph_rtl(paragraph: Paragraph, *, align: int | None = None) -> None:
+    """Make a paragraph RTL.
+
+    In a ``w:bidi`` paragraph, ``w:jc`` is *logical*: ``left`` means the start
+    edge, which is the right side. Writing ``jc="right"`` — what python-docx
+    does for ``WD_ALIGN_PARAGRAPH.RIGHT`` — pushes the text to the *left*. So
+    the default is to write no ``jc`` at all and let the paragraph start on the
+    right; only an explicit alignment such as centre is written.
+    """
     p_pr = paragraph._p.get_or_add_pPr()
-    for existing in p_pr.findall(qn("w:bidi")):
+    _put(p_pr, "w:bidi", _PPR_AFTER)
+    for existing in p_pr.findall(qn("w:jc")):
         p_pr.remove(existing)
-    _set(p_pr, "w:bidi")
-    # The setter accepts a raw alignment value; the getter is typed as the
-    # enum, so the cast documents that this is intentional.
-    paragraph.alignment = cast(
-        WD_ALIGN_PARAGRAPH, WD_ALIGN_PARAGRAPH.RIGHT if align is None else align
-    )
+    if align is not None:
+        paragraph.alignment = cast(WD_ALIGN_PARAGRAPH, align)
 
 
 def set_run_rtl(run: Run, *, size_pt: int = BODY_SIZE_PT) -> None:
+    """Mark a run as complex-script (Hebrew) with matching fonts, size and weight."""
     r_pr = run._r.get_or_add_rPr()
-    for existing in r_pr.findall(qn("w:rtl")):
-        r_pr.remove(existing)
-    _set(r_pr, "w:rtl")
 
     fonts = r_pr.find(qn("w:rFonts"))
     if fonts is None:
@@ -82,16 +115,39 @@ def set_run_rtl(run: Run, *, size_pt: int = BODY_SIZE_PT) -> None:
     fonts.set(qn("w:ascii"), HEBREW_ASCII_FONT)
     fonts.set(qn("w:hAnsi"), HEBREW_ASCII_FONT)
 
-    # Complex-script size is a separate property from w:sz.
-    sz_cs = OxmlElement("w:szCs")
-    sz_cs.set(qn("w:val"), str(size_pt * 2))  # half-points
-    r_pr.append(sz_cs)
-
-    lang = OxmlElement("w:lang")
-    lang.set(qn("w:bidi"), "he-IL")
-    r_pr.append(lang)
-
     run.font.size = Pt(size_pt)
+    # Hebrew is complex script: Word reads w:bCs / w:szCs for it, not w:b / w:sz.
+    if run.bold:
+        _put(r_pr, "w:bCs", _RPR_BCS_AFTER, None)
+    _put(r_pr, "w:szCs", _RPR_SZCS_AFTER, str(size_pt * 2))  # half-points
+    _put(r_pr, "w:rtl", _RPR_RTL_AFTER, None)
+    lang = _put(r_pr, "w:lang", _RPR_LANG_AFTER, None)
+    lang.set(qn("w:bidi"), "he-IL")
+
+
+def _setup_page(document: DocumentObject) -> None:
+    """A4 with even margins (python-docx defaults to US Letter)."""
+    for section in document.sections:
+        section.page_width = Cm(21.0)
+        section.page_height = Cm(29.7)
+        section.left_margin = section.right_margin = Cm(2.0)
+        set_section_rtl(section)
+
+
+def _make_style_rtl(document: DocumentObject) -> None:
+    """Make Normal RTL, and give the whole document Hebrew language defaults."""
+    normal = document.styles["Normal"]
+    normal.font.name = HEBREW_ASCII_FONT
+    normal.font.size = Pt(BODY_SIZE_PT)
+    _put(normal.element.get_or_add_pPr(), "w:bidi", _PPR_AFTER)
+    r_pr = normal.element.get_or_add_rPr()
+    fonts = r_pr.find(qn("w:rFonts"))
+    if fonts is not None:
+        fonts.set(qn("w:cs"), HEBREW_CS_FONT)
+    _put(r_pr, "w:szCs", _RPR_SZCS_AFTER, str(BODY_SIZE_PT * 2))
+    _put(r_pr, "w:rtl", _RPR_RTL_AFTER, None)
+    lang = _put(r_pr, "w:lang", _RPR_LANG_AFTER, None)
+    lang.set(qn("w:bidi"), "he-IL")
 
 
 def add_rtl_paragraph(
@@ -126,16 +182,11 @@ class DocxExporter:
         except Exception as exc:  # noqa: BLE001 - python-docx raises broadly
             raise ExportError(f"could not create DOCX document: {exc}") from exc
 
-        for section in document.sections:
-            set_section_rtl(section)
+        _setup_page(document)
 
         # Make the built-in Normal style RTL so any paragraph Word adds later
         # (for example when the user presses Enter) inherits the direction.
-        normal = document.styles["Normal"]
-        normal.font.name = HEBREW_ASCII_FONT
-        normal.font.size = Pt(BODY_SIZE_PT)
-        style_p_pr = normal.element.get_or_add_pPr()
-        _set(style_p_pr, "w:bidi")
+        _make_style_rtl(document)
 
         self._write_header(document, context)
 
@@ -207,12 +258,16 @@ class DocxExporter:
         """
         table: Table = document.add_table(rows=0, cols=2)
         table.style = "Table Grid"  # type: ignore[assignment]  # setter takes a name
-        table.alignment = WD_TABLE_ALIGNMENT.RIGHT
 
         # Mirror the section setting onto the table itself; Word honours the
-        # table-level property even if a section is later changed.
-        tbl_pr = table._tbl.tblPr
-        _set(tbl_pr, "w:bidiVisual")
+        # table-level property even if a section is later changed. With it the
+        # table starts at the right margin, so no explicit alignment is set
+        # (``jc`` is logical here too, and ``right`` would flip it left).
+        _put(table._tbl.tblPr, "w:bidiVisual", _TBLPR_BIDI_AFTER)
+
+        table.autofit = False
+        table.columns[0].width = Cm(14.8)
+        table.columns[1].width = Cm(2.2)
 
         speakers = context.transcript.speakers
         for segment in context.transcript.segments:
@@ -230,6 +285,9 @@ class DocxExporter:
             text_paragraph = text_cell.paragraphs[0]
             set_paragraph_rtl(text_paragraph)
             set_run_rtl(text_paragraph.add_run(text))
+
+            time_cell.width = Cm(2.2)
+            text_cell.width = Cm(14.8)
 
             time_paragraph = time_cell.paragraphs[0]
             set_paragraph_rtl(time_paragraph, align=WD_ALIGN_PARAGRAPH.CENTER)
@@ -256,13 +314,8 @@ def write_simple_docx(
     except Exception as exc:  # noqa: BLE001 - python-docx raises broadly
         raise ExportError(f"could not create DOCX document: {exc}") from exc
 
-    for section in document.sections:
-        set_section_rtl(section)
-
-    normal = document.styles["Normal"]
-    normal.font.name = HEBREW_ASCII_FONT
-    normal.font.size = Pt(BODY_SIZE_PT)
-    _set(normal.element.get_or_add_pPr(), "w:bidi")
+    _setup_page(document)
+    _make_style_rtl(document)
 
     add_rtl_paragraph(document, title, style="Title", size_pt=20, bold=True)
     for line in meta:

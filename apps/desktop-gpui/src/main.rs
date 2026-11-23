@@ -1,3 +1,6 @@
+// No console window in release builds; the backend logs to a file.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! Tiktuv (תכתוב) — native desktop shell, built on gpui-kit.
 //!
 //! Supervises the Python FastAPI backend and renders the Hebrew-first UI.
@@ -12,17 +15,31 @@ mod format;
 mod history;
 mod models;
 mod player;
-mod rtl_edit;
+mod rtl_field;
 mod rtl_text;
+mod queue;
 mod seek_bar;
+mod shell;
+mod speaker_dialog;
 mod settings;
 mod system;
+mod ui;
 
 use gpui_kit::AppContext as _;
 use gpui_kit::base::LayoutDirection;
 use gpui_kit::{Bounds, WindowBounds, WindowOptions, px, size};
 
 fn main() {
+    // A GUI build has no console, so a crash would vanish without a trace.
+    // Keep the message where the backend's own logs live.
+    std::panic::set_hook(Box::new(|info| {
+        let dir = backend::default_data_dir().join("logs");
+        let _ = std::fs::create_dir_all(&dir);
+        let line = format!("{info}
+{}
+", std::backtrace::Backtrace::force_capture());
+        let _ = std::fs::write(dir.join("desktop-panic.log"), line);
+    }));
     // reqwest needs a Tokio reactor; run one on a background thread and keep a
     // handle so API calls can hop onto it from GPUI's own executor.
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -34,18 +51,21 @@ fn main() {
         rt.block_on(std::future::pending::<()>());
     });
 
-    // Start the Python backend and read its handshake (port + session token).
-    let backend = backend::BackendProcess::start().expect("start Tiktuv backend");
-    let api = api::Api::new(
-        backend.handshake.base_url(),
-        backend.handshake.token.clone(),
-        handle,
-    );
+    // Start the Python backend on a background thread so the window opens at
+    // once; the UI shows "connecting" until the handshake arrives.
+    let api = api::Api::new(handle);
+    let (backend_tx, backend_rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = backend_tx.send_blocking(backend::BackendProcess::start());
+    });
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            rtl_field::init(cx);
+            // Restore the light/dark choice from last time.
+            ui::apply_theme(backend::load_theme_preference(), cx);
             // The whole interface is Hebrew and reads right-to-left.
             LayoutDirection::Rtl.set_global(cx);
 
@@ -72,7 +92,7 @@ fn main() {
 
             gpui_kit::open_window(options, cx, |window, cx| {
                 window.set_window_title("תכתוב");
-                cx.new(|cx| app::App::new(api.clone(), backend, window, cx))
+                cx.new(|cx| app::App::new(api.clone(), backend_rx, window, cx))
             })
             .expect("open window");
         });

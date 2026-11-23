@@ -1,8 +1,8 @@
 """Generate the Tiktuv application icon.
 
-Produces a multi-resolution .ico: a rounded brand-blue tile with a white
-Hebrew letter tav — the initial of תכתוב. The Desktop shortcut created by
-install.ps1 uses it; the gpui window and the exe do not embed an icon yet.
+Produces tiktuv.ico from the generated tiktuv-icon.png artwork for the EXE
+and Desktop shortcut. Falls back to the original Hebrew tav artwork if the
+PNG is unavailable.
 
 Run from the repository root:
 
@@ -83,10 +83,15 @@ def render() -> Image.Image:
 
 
 def main() -> int:
-    image = render()
+    source = ICON_DIR / "tiktuv-icon.png"
+    if source.is_file():
+        with Image.open(source) as artwork:
+            image = artwork.convert("RGBA")
+    else:
+        image = render()
 
     ICON_DIR.mkdir(parents=True, exist_ok=True)
-    ico_path = ICON_DIR / "icon.ico"
+    ico_path = ICON_DIR / "tiktuv.ico"
     image.save(ico_path, format="ICO", sizes=[(s, s) for s in ICO_SIZES])
     print(f"wrote {ico_path}")
 

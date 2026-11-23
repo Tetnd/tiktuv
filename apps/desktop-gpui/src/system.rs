@@ -3,16 +3,15 @@
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::*;
-use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, IntoElement, ParentElement as _, Styled as _, div, rgb,
+    AnyElement, Context, IntoElement, ParentElement as _, Styled as _, div, px,
 };
 
 use crate::api::ApiError;
 use crate::app::{App, ToastTone};
 use crate::format::*;
+use crate::ui::{self, Ic, Tone};
 use crate::rtl_text::rtl_paragraph;
 use crate::models::*;
 
@@ -23,6 +22,10 @@ impl App {
             let system = api.system().await;
             let soniox = api.soniox_status().await;
             let deepseek = api.deepseek_status().await;
+            let balance = match &deepseek {
+                Ok(s) if s.configured => api.deepseek_balance().await.ok(),
+                _ => None,
+            };
             let _ = this.update(cx, |this, cx| {
                 if let Ok(s) = system {
                     this.system = Some(s);
@@ -33,6 +36,7 @@ impl App {
                 if let Ok(s) = deepseek {
                     this.deepseek_status = Some(s);
                 }
+                this.deepseek_balance = balance;
                 cx.notify();
             });
         })
@@ -47,34 +51,41 @@ impl App {
         let storage = self.storage_panel(cx).into_any_element();
         div()
             .w_full()
-            .p_6()
+            .p_8()
             .v_flex()
-            .gap_4()
-            .child(soniox)
-            .child(deepseek)
+            .gap_6()
+            .child(ui::page_title(
+                "מערכת ומודלים",
+                "בדיקות סביבה, ניהול מודלים, מפתחות API ואחסון",
+            ))
             .child(preflight)
             .child(models)
+            .child(
+                div()
+                    .flex()
+                    .flex_row_reverse()
+                    .flex_wrap()
+                    .gap_6()
+                    .items_start()
+                    .child(div().flex_1().min_w(px(420.)).child(soniox))
+                    .child(div().flex_1().min_w(px(420.)).child(deepseek)),
+            )
             .child(storage)
             .into_any_element()
     }
 
     fn preflight_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let card = div()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(0xe5e7eb))
-            .bg(cx.theme().background)
-            .p_4()
-            .v_flex()
-            .gap_2();
+        let card = ui::pad_card();
 
         let Some(system) = &self.system else {
-            return card.child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0x6b7280))
-                    .child(rtl("בודק את סביבת העבודה…")),
-            );
+            return card
+                .child(ui::section_header(Ic::ShieldCheck, Tone::Accent, "בדיקת מערכת", None))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(ui::muted())
+                        .child(rtl("בודק את סביבת העבודה…")),
+                );
         };
 
         let blocking = system
@@ -82,40 +93,93 @@ impl App {
             .iter()
             .filter(|c| c.status == CheckStatus::Error)
             .count();
+        let warnings = system
+            .checks
+            .iter()
+            .filter(|c| c.status == CheckStatus::Warning)
+            .count();
 
         let mut rows: Vec<AnyElement> = Vec::new();
-        for check in &system.checks {
-            rows.push(check_row(check).into_any_element());
+        for (i, check) in system.checks.iter().enumerate() {
+            rows.push(
+                div()
+                    .when(i > 0, |this| this.border_t_1().border_color(ui::divider()))
+                    .child(check_row(check))
+                    .into_any_element(),
+            );
         }
 
+        let (header_tone, summary) = if blocking > 0 {
+            (Tone::Danger, format!("{blocking} בעיות חוסמות תמלול"))
+        } else if warnings > 0 {
+            (Tone::Warning, format!("הכול תקין · {warnings} אזהרות"))
+        } else {
+            (Tone::Success, "הכול תקין והמערכת מוכנה לתמלול".to_string())
+        };
+
+        let versions: Vec<(&'static str, String)> = vec![
+            ("גרסה", latin(&system.app_version)),
+            ("מערכת", latin(&system.platform)),
+            ("Python", latin(&system.python_version)),
+            (
+                "FFmpeg",
+                system.ffmpeg_version.as_deref().map(latin).unwrap_or_else(|| "לא נמצא".into()),
+            ),
+            (
+                "PyTorch",
+                system.torch_version.as_deref().map(latin).unwrap_or_else(|| "לא מותקן".into()),
+            ),
+            (
+                "CUDA",
+                system.cuda_version.as_deref().map(latin).unwrap_or_else(|| "לא זמין".into()),
+            ),
+        ];
+        // Version strings mix digits and Latin ("2.5.1+cpu",
+        // "8.1.2-full_build-www.gyan.dev"). Without an isolate the bidi
+        // algorithm treats the digits as a separate run and swaps the halves —
+        // "cpu+2.5.1". `latin` keeps each value in one piece.
+        let chips: Vec<AnyElement> = versions
+            .into_iter()
+            .map(|(k, v)| {
+                ui::rtl_row()
+                    .gap_1p5()
+                    .px_2p5()
+                    .py_1()
+                    .rounded_md()
+                    .bg(ui::surface_alt())
+                    .text_xs()
+                    .child(div().text_color(ui::muted()).child(rtl(&format!("{k}:"))))
+                    .child(div().font_medium().text_color(ui::subtle()).child(rtl(&v)))
+                    .into_any_element()
+            })
+            .collect();
+
         card.child(
-            div()
-                .flex()
-                .flex_row_reverse()
-                .items_center()
+            ui::rtl_row()
                 .justify_between()
-                .child(div().text_base().child(rtl("בדיקת מערכת")))
+                .child(ui::section_header(
+                    Ic::ShieldCheck,
+                    header_tone,
+                    "בדיקת מערכת",
+                    Some(&summary),
+                ))
                 .child(
                     Button::new("refresh-system")
-                        .ghost()
+                        .secondary()
+                        .compact()
+                        .icon(ui::icon(Ic::Refresh, 15.0, ui::subtle()))
                         .label(rtl("רענון"))
                         .on_click(cx.listener(|this, _, _, cx| this.refresh_system(cx))),
                 ),
         )
         .when(blocking > 0, |this| {
             this.child(
-                div()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgb(0xfecaca))
-                    .bg(rgb(0xfef2f2))
-                    .p_3()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(0x991b1b))
-                            .child(rtl(&format!("יש {blocking} בעיות שחוסמות תמלול."))),
-                    ),
+                ui::notice(Ic::CircleAlert, Tone::Danger).child(
+                    div()
+                        .text_sm()
+                        .text_color(ui::danger_text())
+                        .child(rtl(&format!("יש {blocking} בעיות שחוסמות תמלול."))),
+                ),
             )
         })
         .child(div().v_flex().children(rows))
@@ -124,62 +188,33 @@ impl App {
                 .flex()
                 .flex_row_reverse()
                 .flex_wrap()
-                .gap_3()
-                .text_xs()
-                .text_color(rgb(0x6b7280))
-                // Version strings mix digits and Latin ("2.5.1+cpu",
-                // "8.1.2-full_build-www.gyan.dev"). Without an isolate the bidi
-                // algorithm treats the digits as a separate run and swaps the
-                // halves — "cpu+2.5.1". `latin` keeps each value in one piece.
-                .child(rtl(&format!("גרסה: {}", latin(&system.app_version))))
-                .child(rtl(&format!("מערכת: {}", latin(&system.platform))))
-                .child(rtl(&format!("Python: {}", latin(&system.python_version))))
-                .child(rtl(&format!(
-                    "FFmpeg: {}",
-                    system
-                        .ffmpeg_version
-                        .as_deref()
-                        .map(latin)
-                        .unwrap_or_else(|| "לא נמצא".into())
-                )))
-                .child(rtl(&format!(
-                    "PyTorch: {}",
-                    system
-                        .torch_version
-                        .as_deref()
-                        .map(latin)
-                        .unwrap_or_else(|| "לא מותקן".into())
-                )))
-                .child(rtl(&format!(
-                    "CUDA: {}",
-                    system
-                        .cuda_version
-                        .as_deref()
-                        .map(latin)
-                        .unwrap_or_else(|| "לא זמין".into())
-                ))),
+                .gap_2()
+                .children(chips),
         )
     }
 
     fn models_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut rows: Vec<AnyElement> = Vec::new();
-        for model in &self.models {
-            rows.push(self.model_row(model, cx).into_any_element());
+        for (i, model) in self.models.iter().enumerate() {
+            rows.push(
+                div()
+                    .when(i > 0, |this| this.border_t_1().border_color(ui::divider()))
+                    .child(self.model_row(model, cx))
+                    .into_any_element(),
+            );
         }
-        div()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(0xe5e7eb))
-            .bg(cx.theme().background)
-            .p_4()
-            .v_flex()
-            .gap_2()
-            .child(div().text_base().child(rtl("מודלים")))
+        ui::pad_card()
+            .child(ui::section_header(
+                Ic::Cpu,
+                Tone::Accent,
+                "מודלים",
+                Some("מודלי התמלול הזמינים והמקום שהם תופסים"),
+            ))
             .when(self.models.is_empty(), |this| {
                 this.child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x6b7280))
+                        .text_color(ui::muted())
                         .child(rtl("לא זוהו מודלים. בדקו את הגדרות המערכת.")),
                 )
             })
@@ -191,34 +226,52 @@ impl App {
     fn model_row(&self, model: &ModelInfo, cx: &mut Context<Self>) -> impl IntoElement {
         let id_download = model.id.clone();
         let id_delete = model.id.clone();
+        let (tile, tone) = if model.is_cloud {
+            (Ic::Cloud, Tone::Info)
+        } else {
+            (Ic::Cpu, Tone::Accent)
+        };
 
-        div()
-            .flex()
-            .flex_row_reverse()
+        ui::rtl_row()
             .items_start()
             .gap_3()
-            .py_2()
-            .border_b_1()
-            .border_color(rgb(0xf3f4f6))
+            .py_4()
+            .child(ui::icon_tile(tile, tone))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .v_flex()
-                    .child(div().text_sm().child(rtl(&model.label_he)))
-                    .child(div().text_xs().text_color(rgb(0x9ca3af)).child(rtl(&latin(&model.id))))
+                    .gap_0p5()
+                    .child(
+                        ui::rtl_row()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_semibold()
+                                    .text_color(ui::ink())
+                                    .child(rtl(&model.label_he)),
+                            )
+                            .child(if model.downloaded {
+                                ui::pill(if model.is_cloud { "מוכן" } else { "הורד" }, Tone::Success)
+                            } else {
+                                ui::pill("טרם הורד", Tone::Warning)
+                            }),
+                    )
+                    .child(div().text_xs().text_color(ui::faint()).child(rtl(&latin(&model.id))))
                     .when(!model.notes_he.is_empty(), |this| {
                         this.child(
                             div()
                                 .text_xs()
-                                .text_color(rgb(0x6b7280))
+                                .text_color(ui::muted())
                                 .child(rtl_paragraph(&model.notes_he)),
                         )
                     })
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x6b7280))
+                            .text_color(ui::muted())
                             .child(rtl_paragraph(format!(
                                 "גודל הורדה: כ-{} · רישיון: {}",
                                 format_bytes(model.approx_download_bytes),
@@ -227,14 +280,14 @@ impl App {
                     ),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_row_reverse()
+                ui::rtl_row()
                     .gap_2()
                     .when(model.downloaded, |this| {
                         this.child(
                             Button::new(format!("del-model-{id_delete}"))
-                                .danger()
+                                .ghost()
+                                .compact()
+                                .icon(ui::icon(Ic::Trash, 15.0, ui::danger()))
                                 .label(rtl("מחיקה"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.delete_model(id_delete.clone(), cx)
@@ -245,6 +298,8 @@ impl App {
                         this.child(
                             Button::new(format!("dl-model-{id_download}"))
                                 .secondary()
+                                .compact()
+                                .icon(ui::icon(Ic::Download, 15.0, ui::subtle()))
                                 .label(rtl("הורדה"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.download_model(id_download.clone(), cx)
@@ -258,42 +313,77 @@ impl App {
         let Some(storage) = self.system.as_ref().and_then(|s| s.storage.clone()) else {
             return div();
         };
-        div()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(0xe5e7eb))
-            .bg(cx.theme().background)
-            .p_4()
-            .v_flex()
-            .gap_2()
-            .child(div().text_base().child(rtl("אחסון ופרטיות")))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0x6b7280))
-                    .child(rtl_paragraph("כל הנתונים נשמרים במחשב שלכם בלבד. אין העלאה של הקלטות ואין איסוף נתוני שימוש — למעט הורדת מודל שאתם יוזמים במפורש.")),
-            )
-            .child(
-                div()
-                    .v_flex()
-                    .gap_1()
-                    .text_xs()
-                    .text_color(rgb(0x6b7280))
-                    .child(rtl(&format!("תיקיית הנתונים: {}", latin(&storage.data_dir))))
-                    .child(rtl(&format!("תיקיית המודלים: {}", latin(&storage.models_dir))))
-                    .child(rtl(&format!("מדיה: {}", format_bytes(storage.media_bytes))))
-                    .child(rtl(&format!("תמלילים: {}", format_bytes(storage.transcripts_bytes))))
-                    .child(rtl(&format!("ייצוא: {}", format_bytes(storage.exports_bytes))))
-                    .child(rtl(&format!("קבצים זמניים: {}", format_bytes(storage.temp_bytes))))
-                    .child(rtl(&format!("מודלים: {}", format_bytes(storage.models_bytes))))
-                    .child(rtl(&format!("פנוי בדיסק: {}", format_bytes(storage.free_disk_bytes)))),
-            )
-            .child(
-                Button::new("cleanup-temp")
-                    .secondary()
-                    .label(rtl("מחיקת קבצים זמניים"))
-                    .on_click(cx.listener(|this, _, _, cx| this.cleanup_temp(cx))),
-            )
+        let tiles: Vec<AnyElement> = [
+            (Ic::Film, "מדיה", format_bytes(storage.media_bytes)),
+            (Ic::FileText, "תמלילים", format_bytes(storage.transcripts_bytes)),
+            (Ic::FileDown, "ייצוא", format_bytes(storage.exports_bytes)),
+            (Ic::Eraser, "קבצים זמניים", format_bytes(storage.temp_bytes)),
+            (Ic::Cpu, "מודלים", format_bytes(storage.models_bytes)),
+            (Ic::HardDrive, "פנוי בדיסק", format_bytes(storage.free_disk_bytes)),
+        ]
+        .into_iter()
+        .map(|(ic, label, value)| {
+            ui::rtl_row()
+                .w(px(190.))
+                .flex_grow(1.0)
+                .gap_3()
+                .p_3()
+                .rounded_lg()
+                .bg(ui::surface_alt())
+                .child(ui::icon(ic, 18.0, ui::muted()))
+                .child(
+                    div()
+                        .v_flex()
+                        .child(div().text_sm().font_semibold().text_color(ui::ink()).child(rtl(&value)))
+                        .child(div().text_xs().text_color(ui::muted()).child(rtl(label))),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+        div().child(
+            ui::pad_card()
+                .child(ui::section_header(
+                    Ic::HardDrive,
+                    Tone::Neutral,
+                    "אחסון ופרטיות",
+                    Some("כל הנתונים נשמרים במחשב שלכם בלבד"),
+                ))
+                .child(
+                    ui::notice(Ic::Lock, Tone::Success).child(
+                        div().flex_1().text_sm().text_color(ui::subtle()).child(rtl_paragraph(
+                            "אין העלאה של הקלטות ואין איסוף נתוני שימוש — למעט הורדת מודל שאתם יוזמים במפורש.",
+                        )),
+                    ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row_reverse()
+                        .flex_wrap()
+                        .gap_2()
+                        .children(tiles),
+                )
+                .child(
+                    div()
+                        .v_flex()
+                        .gap_1()
+                        .text_xs()
+                        .text_color(ui::muted())
+                        .child(rtl(&format!("תיקיית הנתונים: {}", latin(&storage.data_dir))))
+                        .child(rtl(&format!("תיקיית המודלים: {}", latin(&storage.models_dir)))),
+                )
+                .child(
+                    div().flex().flex_row_reverse().child(
+                        Button::new("cleanup-temp")
+                            .secondary()
+                            .compact()
+                            .icon(ui::icon(Ic::Eraser, 15.0, ui::subtle()))
+                            .label(rtl("מחיקת קבצים זמניים"))
+                            .on_click(cx.listener(|this, _, _, cx| this.cleanup_temp(cx))),
+                    ),
+                ),
+        )
     }
 
     fn download_model(&self, id: String, cx: &mut Context<Self>) {
@@ -368,10 +458,11 @@ impl App {
     }
 
     fn key_panel(&self, kind: KeyKind, cx: &mut Context<Self>) -> AnyElement {
-        let (title, desc, configured, masked, key_state) = match kind {
+        let (title, desc, ic, configured, masked, key_state) = match kind {
             KeyKind::Soniox => (
                 "Soniox (תמלול בענן)",
                 "תמלול עברי מדויק דרך שירות הענן של Soniox. האודיו נשלח לשרתים של Soniox.",
+                Ic::Cloud,
                 self.soniox_status.as_ref().map(|s| s.configured).unwrap_or(false),
                 self.soniox_status.as_ref().map(|s| s.masked_key.clone()),
                 self.soniox_key.clone(),
@@ -379,6 +470,7 @@ impl App {
             KeyKind::DeepSeek => (
                 "DeepSeek (ניתוח AI)",
                 "מנוע ה-AI שמפיק את התקציר, נקודות המפתח, המשימות, הישויות וניתוח הדוברים. התמליל נשלח ל-DeepSeek רק בעת יצירת ניתוח.",
+                Ic::Sparkles,
                 self.deepseek_status.as_ref().map(|s| s.configured).unwrap_or(false),
                 self.deepseek_status.as_ref().map(|s| s.masked_key.clone()),
                 self.deepseek_key.clone(),
@@ -387,44 +479,110 @@ impl App {
         let save_id = if kind == KeyKind::Soniox { "save-soniox" } else { "save-deepseek" };
         let clear_id = if kind == KeyKind::Soniox { "clear-soniox" } else { "clear-deepseek" };
 
-        div()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(0xe5e7eb))
-            .bg(cx.theme().background)
-            .p_4()
-            .v_flex()
-            .gap_2()
-            .child(div().text_base().child(rtl(title)))
-            .child(div().text_sm().text_color(rgb(0x6b7280)).child(rtl_paragraph(desc)))
+        ui::pad_card()
+            .child(
+                ui::rtl_row()
+                    .justify_between()
+                    .child(ui::section_header(
+                        ic,
+                        Tone::Accent,
+                        title,
+                        Some(if configured { "מפתח מוגדר" } else { "לא הוגדר מפתח" }),
+                    ))
+                    .child(if configured {
+                        ui::icon_pill(Ic::CircleCheck, "פעיל", Tone::Success)
+                    } else {
+                        ui::pill("לא פעיל", Tone::Neutral)
+                    }),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(ui::muted())
+                    .child(rtl_paragraph(desc)),
+            )
+            .when(configured && kind == KeyKind::DeepSeek, |this| {
+                let text = match &self.deepseek_balance {
+                    Some(b) if b.balances.is_empty() => "אין יתרה זמינה".to_string(),
+                    Some(b) => {
+                        let amounts: Vec<String> = b
+                            .balances
+                            .iter()
+                            .map(|i| {
+                                let sym = match i.currency.as_str() {
+                                    "USD" => "$".to_string(),
+                                    "CNY" => "¥".to_string(),
+                                    other => format!("{other} "),
+                                };
+                                format!("{sym}{}", i.total_balance)
+                            })
+                            .collect();
+                        let suffix = if b.is_available { "" } else { " (היתרה אינה מספיקה)" };
+                        format!("{}{}", latin(&amounts.join(" + ")), suffix)
+                    }
+                    None => "לא זמינה כרגע".to_string(),
+                };
+                this.child(
+                    ui::rtl_row()
+                        .gap_3()
+                        .p_3()
+                        .rounded_lg()
+                        .bg(ui::surface_alt())
+                        .child(ui::icon(Ic::Gauge, 18.0, ui::muted()))
+                        .child(
+                            div()
+                                .v_flex()
+                                .child(div().text_xs().text_color(ui::muted()).child(rtl("יתרה בחשבון")))
+                                .child(
+                                    div()
+                                        .text_base()
+                                        .font_semibold()
+                                        .text_color(ui::ink())
+                                        .child(rtl(&text)),
+                                ),
+                        ),
+                )
+            })
             .when(configured, |this| {
                 this.child(
-                    div()
-                        .flex()
-                        .flex_row_reverse()
-                        .items_center()
+                    ui::rtl_row()
                         .gap_3()
-                        .child(div().text_sm().child(rtl(&format!("מפתח מוגדר: {}", latin(&masked.unwrap_or_default())))))
+                        .justify_between()
+                        .child(
+                            ui::rtl_row()
+                                .gap_2()
+                                .text_sm()
+                                .text_color(ui::subtle())
+                                .child(ui::icon(Ic::Lock, 14.0, ui::muted()))
+                                .child(rtl(&latin(&masked.unwrap_or_default()))),
+                        )
                         .child(
                             Button::new(clear_id)
                                 .ghost()
+                                .compact()
+                                .icon(ui::icon(Ic::Trash, 15.0, ui::danger()))
                                 .label(rtl("הסרת מפתח"))
                                 .on_click(cx.listener(move |this, _, _, cx| this.clear_api_key(kind, cx))),
                         ),
                 )
             })
             .when(!configured, |this| {
-                this.child(Input::new(&key_state)).child(
-                    Button::new(save_id)
-                        .primary()
-                        .label(rtl("שמירה"))
-                        .on_click(cx.listener(move |this, _, _, cx| this.save_api_key(kind, cx))),
+                this.child(key_state.clone()).child(
+                    div().flex().flex_row_reverse().child(
+                        Button::new(save_id)
+                            .primary()
+                            .icon(ui::icon(Ic::Save, 15.0, gpui_kit::rgb(0xffffff)))
+                            .label(rtl("שמירה"))
+                            .on_click(cx.listener(move |this, _, _, cx| this.save_api_key(kind, cx))),
+                    ),
                 )
             })
             .child(
-                div()
+                ui::rtl_row()
+                    .gap_1p5()
                     .text_xs()
-                    .text_color(rgb(0x9ca3af))
+                    .text_color(ui::faint())
+                    .child(ui::icon(Ic::ShieldCheck, 12.0, ui::faint()))
                     .child(rtl("המפתח נשמר מקומית בתיקיית הנתונים של היישום בלבד.")),
             )
             .into_any_element()
@@ -496,43 +654,40 @@ enum KeyKind {
 }
 
 fn check_row(check: &PreflightCheck) -> impl IntoElement {
-    let (label, color) = match check.status {
-        CheckStatus::Ok => ("תקין", rgb(0x059669)),
-        CheckStatus::Warning => ("אזהרה", rgb(0xd97706)),
-        CheckStatus::Error => ("שגיאה", rgb(0xdc2626)),
+    let (label, tone, ic) = match check.status {
+        CheckStatus::Ok => ("תקין", Tone::Success, Ic::CircleCheck),
+        CheckStatus::Warning => ("אזהרה", Tone::Warning, Ic::TriangleAlert),
+        CheckStatus::Error => ("שגיאה", Tone::Danger, Ic::CircleAlert),
     };
-    div()
-        .flex()
-        .flex_row_reverse()
+    let (fg, _) = tone.colors();
+    ui::rtl_row()
         .items_start()
         .gap_3()
-        .py_2()
-        .child(
-            div()
-                .px_2()
-                .py_0p5()
-                .rounded_full()
-                .bg(color.opacity(0.12))
-                .text_color(color)
-                .text_xs()
-                .whitespace_nowrap()
-                .child(rtl(&label)),
-        )
+        .py_3()
+        .child(div().pt_0p5().child(ui::icon(ic, 18.0, fg)))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .v_flex()
-                .child(div().text_sm().child(rtl(&check.label_he)))
+                .gap_0p5()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_medium()
+                        .text_color(ui::ink())
+                        .child(rtl(&check.label_he)),
+                )
                 .when(!check.detail.is_empty(), |this| {
                     this.child(
-                        div().text_xs().text_color(rgb(0x6b7280)).child(rtl_paragraph(&check.detail)),
+                        div().text_xs().text_color(ui::muted()).child(rtl_paragraph(&check.detail)),
                     )
                 })
                 .when(!check.remedy.is_empty(), |this| {
                     this.child(
-                        div().text_xs().text_color(rgb(0x9ca3af)).child(rtl_paragraph(&check.remedy)),
+                        div().text_xs().text_color(ui::faint()).child(rtl_paragraph(&check.remedy)),
                     )
                 }),
         )
+        .child(ui::pill(label, tone))
 }

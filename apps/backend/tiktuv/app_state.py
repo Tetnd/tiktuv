@@ -90,6 +90,7 @@ def build_state(settings: Settings, bus: EventBus) -> AppState:
         tools=tools,
         downloader=downloader,
         deepseek=deepseek,
+        soniox=credentials,
     )
     job_queue = JobQueue(settings, jobs, transcripts, models, bus, pipeline=pipeline)
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tiktuv-backend"
-version = "1.0.2"
+version = "1.1.0"
 description = "Local-first Hebrew speech-to-text backend for Tiktuv"
 readme = "README.md"
 requires-python = ">=3.12"

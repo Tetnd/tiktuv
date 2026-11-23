@@ -12,6 +12,7 @@ from ..text.hebrew import (
     format_timestamp,
     paragraph_text,
     protect_neutrals,
+    rtl_line,
     split_paragraphs,
 )
 from ..text.subtitles import build_cues
@@ -119,11 +120,12 @@ class VttExporter:
         for cue in cues:
             start = format_timestamp(cue.start, separator=".")
             end = format_timestamp(cue.end, separator=".")
-            # "direction:rl" tells conforming players to lay the cue out RTL
-            # instead of relying on the first strong character.
+            # WebVTT has no RTL cue setting (``direction`` is not one, and
+            # ``vertical`` is for vertical text), so direction comes from an
+            # RLM opening each line, like SRT.
             lines.append(f"{cue.index}")
-            lines.append(f"{start} --> {end} direction:rl align:right")
-            lines.extend(cue.lines)
+            lines.append(f"{start} --> {end}")
+            lines.extend(rtl_line(protect_neutrals(line)) for line in cue.lines)
             lines.append("")
         content = "\n".join(lines)
         return write_text(target_path(context, self.extension), content, bom=False)

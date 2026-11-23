@@ -1,19 +1,21 @@
 //! Transcription settings panel, model picker and first-run model download.
 
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::*;
-use gpui_kit::component::radio::RadioGroup;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, IntoElement, ParentElement as _, Styled as _, Window, div, relative, rgb,
+    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _,
+    StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
 use crate::app::{App, ToastTone};
 use crate::format::*;
+use crate::ui::{self, Ic, Tone};
 use crate::rtl_text::rtl_paragraph;
 use crate::models::*;
 
@@ -21,25 +23,46 @@ impl App {
     // -- settings panel ----------------------------------------------------
     pub fn render_settings_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let open = self.settings_open;
-        let body: AnyElement = if open { self.settings_body(cx) } else { div().into_any_element() };
+        let summary = format!(
+            "{} · {} · {}",
+            ["עברית", "זיהוי אוטומטי", "אנגלית"][language_index(self.settings.language)],
+            ["מעבד אוטומטי", "כרטיס מסך", "מעבד (CPU)"][device_index(self.settings.device)],
+            ["מהיר", "מאוזן", "דיוק מרבי"][quality_index(self.settings.quality)],
+        );
 
-        div()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(0xe5e7eb))
-            .bg(cx.theme().background)
-            .v_flex()
+        ui::card()
             .child(
-                Button::new("toggle-settings")
-                    .ghost()
-                    .label(rtl(if open { "הגדרות תמלול — הסתר" } else { "הגדרות תמלול — הצג" }))
+                ui::rtl_row()
+                    .id("toggle-settings")
+                    .gap_3()
+                    .p_5()
+                    .cursor_pointer()
+                    .rounded_xl()
+                    .hover(|s| s.bg(ui::surface_alt()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.settings_open = !this.settings_open;
                         cx.notify();
-                    })),
+                    }))
+                    .child(div().flex_1().child(ui::section_header(
+                        Ic::Sliders,
+                        Tone::Neutral,
+                        "הגדרות תמלול",
+                        Some(&summary),
+                    )))
+                    .child(ui::icon(
+                        if open { Ic::ChevronDown } else { Ic::ChevronLeft },
+                        18.0,
+                        ui::muted(),
+                    )),
             )
             .when(open, |this| {
-                this.child(div().border_t_1().border_color(rgb(0xe5e7eb)).p_4().child(body))
+                this.child(
+                    div()
+                        .border_t_1()
+                        .border_color(ui::divider())
+                        .p_5()
+                        .child(self.settings_body(cx)),
+                )
             })
             .into_any_element()
     }
@@ -52,128 +75,109 @@ impl App {
         let fillers = self.settings.preserve_filler_words;
         let punctuation = self.settings.normalize_punctuation;
         let auto_download = self.settings.auto_download_model;
-        let diarization = self.settings.enable_diarization;
         let proofreading = self.settings.enable_proofreading;
+        let analysis = self.settings.enable_analysis;
 
         div()
             .v_flex()
-            .gap_3()
-            .child(field(
+            .gap_5()
+            .child(setting_row(
                 "שפה",
-                RadioGroup::new("language")
-                    .children([rtl("עברית"), rtl("זיהוי אוטומטי"), rtl("אנגלית")])
-                    .selected_index(Some(language_index(language)))
-                    .on_change(cx.listener(|this, idx, _, cx| {
-                        this.settings.language = language_from_index(*idx);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
+                "השפה שמדברים בהקלטה",
+                segmented(
+                    "language",
+                    &["עברית", "זיהוי אוטומטי", "אנגלית"],
+                    language_index(language),
+                    cx,
+                    |this, idx| this.settings.language = language_from_index(idx),
+                ),
             ))
-            .child(field("מנוע תמלול", self.model_radio("model-setting", cx)))
-            .child(field(
+            .child(setting_row(
+                "מנוע תמלול",
+                "המודל שיבצע את התמלול",
+                self.model_chips_aligned(false, cx),
+            ))
+            .child(setting_row(
                 "מעבד",
-                RadioGroup::new("device")
-                    .children([rtl("אוטומטי"), rtl("כרטיס מסך (GPU)"), rtl("מעבד (CPU)")])
-                    .selected_index(Some(device_index(device)))
-                    .on_change(cx.listener(|this, idx, _, cx| {
-                        this.settings.device = device_from_index(*idx);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
+                "היכן לבצע את העיבוד",
+                segmented(
+                    "device",
+                    &["אוטומטי", "כרטיס מסך (GPU)", "מעבד (CPU)"],
+                    device_index(device),
+                    cx,
+                    |this, idx| this.settings.device = device_from_index(idx),
+                ),
             ))
-            .child(field(
+            .child(setting_row(
                 "איכות",
-                RadioGroup::new("quality")
-                    .children([rtl("מהיר"), rtl("מאוזן"), rtl("דיוק מרבי")])
-                    .selected_index(Some(quality_index(quality)))
-                    .on_change(cx.listener(|this, idx, _, cx| {
-                        this.settings.quality = quality_from_index(*idx);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
+                "מהירות מול דיוק",
+                segmented(
+                    "quality",
+                    &["מהיר", "מאוזן", "דיוק מרבי"],
+                    quality_index(quality),
+                    cx,
+                    |this, idx| this.settings.quality = quality_from_index(idx),
+                ),
             ))
-            .child(field(
+            .child(setting_row(
                 "חותמות זמן",
-                RadioGroup::new("timestamps")
-                    .children([rtl("ללא"), rtl("לפי מקטע"), rtl("לפי מילה")])
-                    .selected_index(Some(timestamps_index(timestamps)))
-                    .on_change(cx.listener(|this, idx, _, cx| {
-                        this.settings.timestamps = timestamps_from_index(*idx);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
+                "תיעוד זמנים בתמליל",
+                segmented(
+                    "timestamps",
+                    &["ללא", "לפי מקטע", "לפי מילה"],
+                    timestamps_index(timestamps),
+                    cx,
+                    |this, idx| this.settings.timestamps = timestamps_from_index(idx),
+                ),
             ))
-            .child(toggle(
-                "fillers",
-                "שמירת מילות מילוי",
-                fillers,
-                cx,
-                |this, v| this.settings.preserve_filler_words = v,
-            ))
-            .child(toggle(
-                "punctuation",
-                "תיקון פיסוק ורווחים",
-                punctuation,
-                cx,
-                |this, v| this.settings.normalize_punctuation = v,
-            ))
-            .child(toggle(
-                "auto-download",
-                "הורדת מודל אוטומטית",
-                auto_download,
-                cx,
-                |this, v| this.settings.auto_download_model = v,
-            ))
-            .child(toggle(
-                "diarization",
-                "זיהוי דוברים (ניסיוני)",
-                diarization,
-                cx,
-                |this, v| this.settings.enable_diarization = v,
-            ))
-            .child(toggle(
-                "proofreading",
-                "הגהה חכמה בעזרת DeepSeek (דורש מפתח API)",
-                proofreading,
-                cx,
-                |this, v| this.settings.enable_proofreading = v,
-            ))
-            .into_any_element()
-    }
-
-    // -- model picker ------------------------------------------------------
-    pub fn model_radio(&self, id: &'static str, cx: &mut Context<Self>) -> AnyElement {
-        if self.models.is_empty() {
-            return div()
-                .text_sm()
-                .text_color(rgb(0x6b7280))
-                .child(rtl(&latin(&self.settings.model_id)))
-                .into_any_element();
-        }
-        let labels: Vec<String> = self
-            .models
-            .iter()
-            .map(|m| {
-                let label = if !m.is_cloud && !m.downloaded {
-                    format!("{} — טרם הורד", m.label_he)
-                } else {
-                    m.label_he.clone()
-                };
-                rtl(&label)
-            })
-            .collect();
-        let selected = self.models.iter().position(|m| m.id == self.settings.model_id);
-        let ids: Vec<String> = self.models.iter().map(|m| m.id.clone()).collect();
-
-        RadioGroup::new(id)
-            .children(labels)
-            .selected_index(selected)
-            .on_change(cx.listener(move |this: &mut App, idx: &usize, _: &mut Window, cx: &mut Context<App>| {
-                if let Some(model_id) = ids.get(*idx) {
-                    this.settings.model_id = model_id.clone();
-                    cx.notify();
-                }
-            }))
+            .child(div().h_px().bg(ui::divider()))
+            .child(
+                div()
+                    .flex()
+                    .flex_row_reverse()
+                    .flex_wrap()
+                    .gap_y_4()
+                    .child(toggle(
+                        "fillers",
+                        "שמירת מילות מילוי",
+                        "משאיר ״אה״, ״אממ״ וכדומה בתמליל",
+                        fillers,
+                        cx,
+                        |this, v| this.settings.preserve_filler_words = v,
+                    ))
+                    .child(toggle(
+                        "punctuation",
+                        "תיקון פיסוק ורווחים",
+                        "מסדר רווחים וסימני פיסוק אחרי התמלול",
+                        punctuation,
+                        cx,
+                        |this, v| this.settings.normalize_punctuation = v,
+                    ))
+                    .child(toggle(
+                        "auto-download",
+                        "הורדת מודל אוטומטית",
+                        "מוריד את המודל בשימוש ראשון אם הוא חסר",
+                        auto_download,
+                        cx,
+                        |this, v| this.settings.auto_download_model = v,
+                    ))
+                    .child(toggle(
+                        "analysis",
+                        "ניתוח AI אוטומטי",
+                        "תקציר, נקודות מפתח, משימות וציטוטים מוכנים עם סיום התמלול (DeepSeek)",
+                        analysis,
+                        cx,
+                        |this, v| this.settings.enable_analysis = v,
+                    ))
+                    .child(toggle(
+                        "proofreading",
+                        "הגהה חכמה בעזרת DeepSeek",
+                        "דורש מפתח API; התמליל נשלח ל-DeepSeek",
+                        proofreading,
+                        cx,
+                        |this, v| this.settings.enable_proofreading = v,
+                    )),
+            )
             .into_any_element()
     }
 
@@ -197,80 +201,72 @@ impl App {
         let model_id = model.id.clone();
         let status = self.model_download.clone();
 
-        div()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(0xc7d2fe))
-            .bg(rgb(0xeef2ff))
-            .p_4()
-            .v_flex()
-            .gap_2()
+        ui::notice(Ic::Download, Tone::Accent)
+            .p_5()
+            .gap_4()
+            .rounded_xl()
             .child(
                 div()
-                    .text_base()
-                    .child(rtl(if downloading { "מוריד את מודל התמלול…" } else { "נדרש מודל תמלול" })),
+                    .flex_1()
+                    .min_w_0()
+                    .v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_semibold()
+                            .text_color(ui::ink())
+                            .child(rtl(if downloading {
+                                "מוריד את מודל התמלול…"
+                            } else {
+                                "נדרש מודל תמלול"
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(ui::subtle())
+                            .child(rtl(&format!("{label} — {}", format_bytes(approx)))),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(ui::muted())
+                            .child(rtl_paragraph(format!("נשמר בתיקייה: {}", latin(&cache)))),
+                    )
+                    .child(
+                        div().text_xs().text_color(ui::muted()).child(rtl_paragraph(
+                            "זו הפעולה היחידה ביישום שמשתמשת באינטרנט. לאחר ההורדה הכול פועל מקומית.",
+                        )),
+                    )
+                    .when(downloading, |this| {
+                        let p = status.as_ref().map(|s| s.percent).unwrap_or(0.0);
+                        this.child(ui::progress_bar(p as f32, Tone::Accent)).child(
+                            div().text_xs().text_color(ui::subtle()).child(rtl(&format!(
+                                "{} · {} מתוך {}",
+                                format_percent(p),
+                                format_bytes(status.as_ref().map(|s| s.downloaded_bytes).unwrap_or(0)),
+                                format_bytes(status.as_ref().map(|s| s.total_bytes).unwrap_or(0))
+                            ))),
+                        )
+                    })
+                    .child(div().pt_1().child(if downloading {
+                        Button::new("cancel-dl")
+                            .secondary()
+                            .label(rtl("עצור"))
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel_model_download(cx)))
+                            .into_any_element()
+                    } else {
+                        Button::new("start-dl")
+                            .primary()
+                            .icon(ui::icon(Ic::Download, 16.0, gpui_kit::rgb(0xffffff)))
+                            .label(rtl("הורדה"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.start_model_download(model_id.clone(), cx)
+                            }))
+                            .into_any_element()
+                    })),
             )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0x4b5563))
-                    .child(rtl(&format!("{label} — {}", format_bytes(approx)))),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(0x6b7280))
-                    .child(rtl_paragraph(format!("נשמר בתיקייה: {}", latin(&cache)))),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(0x6b7280))
-                    .child(rtl_paragraph("זו הפעולה היחידה ביישום שמשתמשת באינטרנט. לאחר ההורדה הכול פועל מקומית.")),
-            )
-            .when(downloading, |this| {
-                let p = status.as_ref().map(|s| s.percent).unwrap_or(0.0);
-                this.child(
-                    // Fills from the right, like the rest of the interface.
-                    div()
-                        .flex()
-                        .flex_row_reverse()
-                        .w_full()
-                        .h_2()
-                        .rounded_full()
-                        .bg(rgb(0xe5e7eb))
-                        .child(
-                            div()
-                                .h_full()
-                                .rounded_full()
-                                .bg(rgb(0x4f46e5))
-                                .w(relative(p.clamp(0.0, 1.0) as f32)),
-                        ),
-                )
-                .child(
-                    div().text_xs().text_color(rgb(0x4b5563)).child(rtl(&format!(
-                        "{} · {} מתוך {}",
-                        format_percent(p),
-                        format_bytes(status.as_ref().map(|s| s.downloaded_bytes).unwrap_or(0)),
-                        format_bytes(status.as_ref().map(|s| s.total_bytes).unwrap_or(0))
-                    ))),
-                )
-            })
-            .child(if downloading {
-                Button::new("cancel-dl")
-                    .secondary()
-                    .label(rtl("עצור"))
-                    .on_click(cx.listener(|this, _, _, cx| this.cancel_model_download(cx)))
-                    .into_any_element()
-            } else {
-                Button::new("start-dl")
-                    .primary()
-                    .label(rtl("הורדה"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.start_model_download(model_id.clone(), cx)
-                    }))
-                    .into_any_element()
-            })
             .into_any_element()
     }
 
@@ -332,29 +328,103 @@ impl App {
     }
 }
 
-fn field(label: &'static str, element: AnyElement) -> AnyElement {
+/// A settings row: label and hint on the right, the control filling the rest.
+fn setting_row(label: &'static str, hint: &'static str, control: AnyElement) -> AnyElement {
+    ui::rtl_row()
+        .items_start()
+        .gap_6()
+        .child(
+            div()
+                .w(px(170.))
+                .flex_shrink_0()
+                .v_flex()
+                .child(div().text_sm().font_medium().text_color(ui::ink()).child(rtl(label)))
+                .child(div().text_xs().text_color(ui::muted()).child(rtl(hint))),
+        )
+        .child(div().flex_1().min_w_0().flex().flex_row_reverse().child(control))
+        .into_any_element()
+}
+
+/// A row of mutually exclusive options in a single rounded track.
+pub(crate) fn segmented(
+    id: &'static str,
+    options: &[&'static str],
+    selected: usize,
+    cx: &mut Context<App>,
+    apply: impl Fn(&mut App, usize) + 'static,
+) -> AnyElement {
+    let apply = Rc::new(apply);
+    let mut items: Vec<AnyElement> = Vec::new();
+    for (index, label) in options.iter().enumerate() {
+        let on = index == selected;
+        let apply = apply.clone();
+        items.push(
+            div()
+                .id((id, index))
+                .px_4()
+                .h_8()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .cursor_pointer()
+                .text_sm()
+                .whitespace_nowrap()
+                .when(on, |this| {
+                    this.bg(ui::surface())
+                        .shadow_sm()
+                        .font_semibold()
+                        .text_color(ui::accent_strong())
+                })
+                .when(!on, |this| this.text_color(ui::muted()).hover(|s| s.text_color(ui::ink())))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    apply(this, index);
+                    cx.notify();
+                }))
+                .child(rtl(label))
+                .into_any_element(),
+        );
+    }
     div()
-        .v_flex()
+        .flex()
+        .flex_row_reverse()
+        .p_1()
         .gap_1()
-        .child(div().text_sm().text_color(rgb(0x4b5563)).child(rtl(&label)))
-        .child(element)
+        .rounded_lg()
+        .bg(ui::surface_alt())
+        .children(items)
         .into_any_element()
 }
 
 fn toggle(
     id: &'static str,
     label: &'static str,
+    hint: &'static str,
     checked: bool,
     cx: &mut Context<App>,
     apply: impl Fn(&mut App, bool) + 'static,
 ) -> AnyElement {
-    Switch::new(id)
-        .label(rtl(label))
-        .checked(checked)
-        .on_change(cx.listener(move |this, value, _, cx| {
-            apply(this, *value);
-            cx.notify();
-        }))
+    div()
+        .w_1_2()
+        .px_2()
+        .v_flex()
+        .gap_0p5()
+        .child(
+            Switch::new(id)
+                .label(rtl(label))
+                .checked(checked)
+                .on_change(cx.listener(move |this, value, _, cx| {
+                    apply(this, *value);
+                    cx.notify();
+                })),
+        )
+        .child(
+            div()
+                .pr_11()
+                .text_xs()
+                .text_color(ui::muted())
+                .child(rtl(hint)),
+        )
         .into_any_element()
 }
 
@@ -419,5 +489,13 @@ fn timestamps_from_index(i: usize) -> TimestampMode {
         0 => TimestampMode::None,
         1 => TimestampMode::Segment,
         _ => TimestampMode::Word,
+    }
+}
+
+fn speaker_method_index(method: &str) -> usize {
+    match method {
+        "soniox" => 1,
+        "deepseek" => 2,
+        _ => 0,
     }
 }

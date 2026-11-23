@@ -250,7 +250,9 @@ class TestPipelineStage:
 
         monkeypatch.setattr("tiktuv.proofread.httpx.post", fake_post)
 
-        _store, _t, job, working = make_job(settings, tools, sample_mp3)
+        _store, _t, job, working = make_job(
+            settings, tools, sample_mp3, enable_diarization=False, enable_analysis=False
+        )
         progress = _Progress()
         result = self._pipeline(settings, tools, key="k").run(
             job, working, cancel=CancelToken(), on_progress=progress
@@ -266,7 +268,9 @@ class TestPipelineStage:
     def test_skips_the_stage_without_a_key(
         self, settings: Settings, tools: FFmpegTools, sample_mp3: Path
     ) -> None:
-        _store, _t, job, working = make_job(settings, tools, sample_mp3)
+        _store, _t, job, working = make_job(
+            settings, tools, sample_mp3, enable_diarization=False, enable_analysis=False
+        )
         result = self._pipeline(settings, tools, key=None).run(
             job, working, cancel=CancelToken(), on_progress=_Progress()
         )
@@ -285,7 +289,9 @@ class TestPipelineStage:
             "tiktuv.proofread.httpx.post",
             lambda url, **kw: _FakeResponse(500, {}),
         )
-        _store, _t, job, working = make_job(settings, tools, sample_mp3)
+        _store, _t, job, working = make_job(
+            settings, tools, sample_mp3, enable_diarization=False, enable_analysis=False
+        )
         result = self._pipeline(settings, tools, key="k").run(
             job, working, cancel=CancelToken(), on_progress=_Progress()
         )
@@ -307,7 +313,12 @@ class TestPipelineStage:
 
         monkeypatch.setattr("tiktuv.proofread.httpx.post", fake_post)
         _store, _t, job, working = make_job(
-            settings, tools, sample_mp3, enable_proofreading=False
+            settings,
+            tools,
+            sample_mp3,
+            enable_proofreading=False,
+            enable_diarization=False,
+            enable_analysis=False,
         )
         result = self._pipeline(settings, tools, key="k").run(
             job, working, cancel=CancelToken(), on_progress=_Progress()

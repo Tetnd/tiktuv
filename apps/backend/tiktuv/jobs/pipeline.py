@@ -14,12 +14,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..analysis import generate_analysis
 from ..asr.base import TranscribeRequest
 from ..asr.chunking import TranscriptAccumulator, shift_segments
 from ..asr.downloader import ModelDownloader
 from ..asr.registry import ModelManager, is_downloaded, use_mock_backend
 from ..config import Settings
-from ..credentials import DeepSeekCredentials
+from ..credentials import DeepSeekCredentials, SonioxCredentials
 from ..diarization import (
     assign_speakers,
     build_speaker_map,
@@ -41,6 +42,7 @@ from ..schemas import (
     TranscriptionSettings,
 )
 from ..security import validate_output_dir
+from ..speakers import drop_lone_speaker, identify_speakers, name_existing_speakers
 from ..text.hebrew import post_process_segments
 from .store import TranscriptStore, free_disk_bytes
 
@@ -57,9 +59,11 @@ STAGE_WEIGHTS: dict[JobStage, tuple[float, float]] = {
     JobStage.DIARIZING: (0.80, 0.84),
     # Proofreading is one network round-trip per ~40 segments against a
     # reasoning model, so on a long recording it is minutes, not seconds.
-    JobStage.PROOFREADING: (0.84, 0.92),
-    JobStage.GENERATING_SUBTITLES: (0.92, 0.94),
-    JobStage.EXPORTING: (0.94, 1.00),
+    JobStage.PROOFREADING: (0.84, 0.90),
+    # One long request to the reasoning model; it reads the whole transcript.
+    JobStage.ANALYZING: (0.90, 0.95),
+    JobStage.GENERATING_SUBTITLES: (0.95, 0.96),
+    JobStage.EXPORTING: (0.96, 1.00),
 }
 
 #: Flush a partial transcript at least this often, so a crash costs at most
@@ -91,6 +95,7 @@ class TranscriptionPipeline:
         tools: FFmpegTools | None = None,
         downloader: ModelDownloader | None = None,
         deepseek: DeepSeekCredentials | None = None,
+        soniox: SonioxCredentials | None = None,
     ) -> None:
         self._settings = settings
         self._models = model_manager
@@ -98,6 +103,7 @@ class TranscriptionPipeline:
         self._tools = tools
         self._downloader = downloader
         self._deepseek = deepseek
+        self._soniox = soniox
 
     def _ensure_tools(self) -> FFmpegTools:
         if self._tools is None:
@@ -250,10 +256,21 @@ class TranscriptionPipeline:
             segments, speakers = self._diarize(
                 job, media_path, tools, segments, cancel=cancel, on_progress=on_progress
             )
-        # A cloud transcriber (Soniox) attaches speaker ids itself; a local
-        # diarization backend is optional. Build the "דובר 1" display map from
-        # whichever source produced speakers.
-        speakers = speakers or build_speaker_map(segments)
+        else:
+            segments, speakers = self._recognise_speakers(
+                job,
+                media_path,
+                tools,
+                segments,
+                settings,
+                cancel=cancel,
+                on_progress=on_progress,
+            )
+        # A cloud transcriber (Soniox) attaches speaker ids itself; otherwise
+        # the step above did. Build the "דובר 1" display map for whichever
+        # source produced speakers, keeping any real names that were found.
+        speakers = {**build_speaker_map(segments), **speakers}
+        segments, speakers = drop_lone_speaker(segments, speakers)
 
         # -- 7. proofreading ------------------------------------------------
         segments, proofread_model, corrections = self._proofread(
@@ -274,7 +291,12 @@ class TranscriptionPipeline:
         )
         self._transcripts.save(transcript)
 
-        # -- 8. exports ---------------------------------------------------
+        # -- 8. AI analysis -------------------------------------------------
+        # Last of the DeepSeek steps, after proofreading and speaker names so it
+        # reads the finished text. The job is not "done" until this returns.
+        self._analyse(transcript, settings, cancel=cancel, on_progress=on_progress)
+
+        # -- 9. exports ---------------------------------------------------
         exports = self._export(job, transcript, settings, on_progress=on_progress)
 
         on_progress(JobStage.DONE, 1.0, duration, None)
@@ -391,6 +413,137 @@ class TranscriptionPipeline:
         speakers = build_speaker_map(segments)
         on_progress(JobStage.DIARIZING, stage_progress(JobStage.DIARIZING, 1.0), 0.0, None)
         return segments, speakers
+
+    def _recognise_speakers(
+        self,
+        job: JobDetail,
+        media_path: Path,
+        tools: FFmpegTools,
+        segments: list[Segment],
+        settings: TranscriptionSettings,
+        *,
+        cancel: CancelToken,
+        on_progress: ProgressCallback,
+    ) -> tuple[list[Segment], dict[str, str]]:
+        """Tell speakers apart with Soniox or DeepSeek.
+
+        Never fatal: a transcription that took an hour is not thrown away
+        because a speaker call failed. Every failure leaves the transcript as
+        it is and says why on the progress line.
+        """
+        deepseek_key = self._deepseek.get() if self._deepseek is not None else None
+        already = any(segment.speaker for segment in segments)
+
+        def say(fraction: float, message: str) -> None:
+            on_progress(
+                JobStage.DIARIZING, stage_progress(JobStage.DIARIZING, fraction), 0.0, message
+            )
+
+        # The transcriber (Soniox) already separated the voices; all that is
+        # left to offer is real names, when the user asked for them.
+        if already:
+            if settings.suggest_speaker_names and deepseek_key:
+                say(0.5, "מחפש שמות של הדוברים")
+                try:
+                    names, _notes = name_existing_speakers(
+                        segments, build_speaker_map(segments), deepseek_key=deepseek_key
+                    )
+                    return segments, names
+                except TiktuvError as exc:
+                    log.warning("speaker names failed", extra={"error": str(exc)})
+            return segments, {}
+
+        if not settings.enable_diarization:
+            return segments, {}
+
+        soniox_key = self._soniox.get() if self._soniox is not None else None
+        try:
+            outcome = identify_speakers(
+                segments,
+                method=settings.speaker_method,
+                settings=settings,
+                soniox_key=soniox_key,
+                deepseek_key=deepseek_key,
+                media_path=media_path,
+                tools=tools,
+                duration=job.duration,
+                sample_rate=self._settings.sample_rate,
+                suggest_names_too=settings.suggest_speaker_names,
+                expected_speakers=settings.expected_speakers,
+                should_cancel=lambda: cancel.cancelled,
+                on_progress=say,
+            )
+        except JobCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a side step must never lose the transcript
+            log.warning("speaker recognition failed", extra={"error": str(exc)})
+            say(1.0, "זיהוי הדוברים נכשל — התמליל נשמר ללא דוברים")
+            return segments, {}
+        cancel.raise_if_cancelled()
+        log.info(
+            "speakers recognised",
+            extra={
+                "job_id": job.id,
+                "method": outcome.method.value,
+                "speakers": outcome.speaker_count,
+            },
+        )
+        return outcome.segments, outcome.speakers
+
+    def _analyse(
+        self,
+        transcript: Transcript,
+        settings: TranscriptionSettings,
+        *,
+        cancel: CancelToken,
+        on_progress: ProgressCallback,
+    ) -> None:
+        """Write the AI analysis (summary, key points, tasks…) with DeepSeek.
+
+        Never fatal, like proofreading: a transcript that took an hour is kept
+        whatever happens here, and the analysis tab can regenerate it later.
+        """
+        if not settings.enable_analysis or not transcript.segments:
+            return
+        api_key = self._deepseek.get() if self._deepseek is not None else None
+        if not api_key:
+            log.warning("analysis requested but no DeepSeek API key is configured")
+            on_progress(
+                JobStage.ANALYZING,
+                stage_progress(JobStage.ANALYZING, 1.0),
+                0.0,
+                "ניתוח דילג — מפתח DeepSeek אינו מוגדר",
+            )
+            return
+
+        cancel.raise_if_cancelled()
+        on_progress(
+            JobStage.ANALYZING,
+            stage_progress(JobStage.ANALYZING, 0.05),
+            0.0,
+            "מנתח את התמליל — תקציר, נקודות מפתח ומשימות",
+        )
+        try:
+            analysis = generate_analysis(api_key, transcript, transcript.speakers)
+            self._transcripts.save_analysis(analysis)
+        except JobCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a side step must never lose the transcript
+            log.warning("analysis failed", extra={"error": str(exc)})
+            on_progress(
+                JobStage.ANALYZING,
+                stage_progress(JobStage.ANALYZING, 1.0),
+                0.0,
+                "הניתוח נכשל — אפשר ליצור אותו מחדש בלשונית הניתוח",
+            )
+            return
+        cancel.raise_if_cancelled()
+        on_progress(
+            JobStage.ANALYZING,
+            stage_progress(JobStage.ANALYZING, 1.0),
+            0.0,
+            "הניתוח הושלם",
+        )
 
     def _proofread(
         self,

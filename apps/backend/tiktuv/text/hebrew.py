@@ -109,6 +109,18 @@ def protect_neutrals(text: str) -> str:
     return text
 
 
+def rtl_line(text: str) -> str:
+    """Start a line with an RLM so its base direction is right-to-left.
+
+    Plain-text viewers and subtitle players pick a line's direction from its
+    first strong character, so a line that opens with a number, a bracket or a
+    Latin word would otherwise render left-to-right. Empty lines stay empty.
+    """
+    if not text.strip():
+        return text
+    return text if text.startswith(RLM) else RLM + text
+
+
 def wrap_bidi_numbers(text: str) -> str:
     """Keep a Latin/number run inside a Hebrew sentence reading left-to-right.
 

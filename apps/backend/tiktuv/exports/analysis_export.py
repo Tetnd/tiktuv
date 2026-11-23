@@ -15,7 +15,7 @@ from pathlib import Path
 from ..errors import ErrorCode, ExportError
 from ..schemas import ExportFormat, ExportSection, TranscriptAnalysis
 from ..security import sanitize_filename
-from ..text.hebrew import RLM, protect_neutrals
+from ..text.hebrew import protect_neutrals, rtl_line
 from .base import ENCODING, write_text
 from .docx_export import write_simple_docx
 from .pdf_export import write_simple_pdf
@@ -227,7 +227,7 @@ def write_section(
             lines.append(f"{heading}:")
         lines.extend(protect_neutrals(line) for line in body)
         lines.append("")
-    content = RLM + "\r\n".join(lines).rstrip("\r\n") + "\r\n"
+    content = "\r\n".join(rtl_line(line) for line in lines).rstrip("\r\n") + "\r\n"
     return write_text(output_dir / f"{stem}.txt", content)
 
 

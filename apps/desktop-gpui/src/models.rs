@@ -30,6 +30,7 @@ pub enum JobStage {
     Transcribing,
     Diarizing,
     Proofreading,
+    Analyzing,
     GeneratingSubtitles,
     Exporting,
     Done,
@@ -149,7 +150,11 @@ pub struct TranscriptionSettings {
     pub vocabulary_prompt: String,
     pub auto_download_model: bool,
     pub enable_diarization: bool,
+    pub speaker_method: String,
+    pub suggest_speaker_names: bool,
+    pub expected_speakers: Option<u32>,
     pub enable_proofreading: bool,
+    pub enable_analysis: bool,
     pub proofread_model: String,
     pub output_dir: Option<String>,
     pub export_formats: Vec<ExportFormat>,
@@ -175,8 +180,12 @@ impl Default for TranscriptionSettings {
             long_silence_seconds: 2.5,
             vocabulary_prompt: String::new(),
             auto_download_model: true,
-            enable_diarization: false,
+            enable_diarization: true,
+            speaker_method: "auto".to_string(),
+            suggest_speaker_names: true,
+            expected_speakers: None,
             enable_proofreading: true,
+            enable_analysis: true,
             proofread_model: String::new(),
             output_dir: None,
             export_formats: Vec::new(),
@@ -234,6 +243,18 @@ pub struct Transcript {
     pub proofread_corrections: u32,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+}
+
+/// Result of recognising the speakers of a stored transcript.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct IdentifySpeakersResponse {
+    pub transcript: Transcript,
+    #[serde(default)]
+    pub method: String,
+    #[serde(default)]
+    pub speaker_count: u32,
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +537,22 @@ pub struct DeepSeekStatus {
     pub configured: bool,
     #[serde(default)]
     pub masked_key: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct DeepSeekBalanceItem {
+    #[serde(default)]
+    pub currency: String,
+    #[serde(default)]
+    pub total_balance: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct DeepSeekBalance {
+    #[serde(default)]
+    pub is_available: bool,
+    #[serde(default)]
+    pub balances: Vec<DeepSeekBalanceItem>,
 }
 
 /// Progress event delivered over SSE.

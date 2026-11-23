@@ -8,7 +8,9 @@ use gpui_kit::component::button::*;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{ActiveTheme, Disableable as _};
+use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::Disableable as _;
+use gpui_kit::InteractiveElement as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, Context, IntoElement, ParentElement as _, Styled as _, Window, div, px, relative,
@@ -19,6 +21,7 @@ use crate::app::{App, ToastTone};
 use crate::diff::{DiffKind, DiffRun, word_diff};
 use crate::editor::section_for_tab;
 use crate::format::*;
+use crate::ui::{self, Ic, Tone};
 use crate::models::*;
 use crate::rtl_text::rtl_paragraph;
 
@@ -45,6 +48,11 @@ impl App {
         } else {
             div().into_any_element()
         };
+        let speakers = if self.speakers_open {
+            self.speakers_overlay(cx)
+        } else {
+            div().into_any_element()
+        };
         let corrections = if self.corrections_open {
             self.corrections_overlay(cx)
         } else {
@@ -56,6 +64,7 @@ impl App {
             .child(export)
             .child(zoom)
             .child(corrections)
+            .child(speakers)
             .into_any_element()
     }
 
@@ -151,11 +160,11 @@ impl App {
                 .w(px(480.))
                 .v_flex()
                 .gap_3()
-                .child(div().text_lg().child(rtl("ייצוא")))
+                .child(ui::section_header(Ic::FileDown, Tone::Accent, "ייצוא", Some("בחרו לשוניות ופורמטים")))
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x6b7280))
+                        .text_color(ui::muted())
                         .child(rtl_paragraph("כל לשונית נשמרת בקובץ נפרד. קובצי DOCX ו-PDF נוצרים עם פסקאות מימין לשמאל ופונט התומך בעברית.")),
                 )
                 .child(
@@ -164,7 +173,7 @@ impl App {
                         .flex_row_reverse()
                         .items_center()
                         .justify_between()
-                        .child(div().text_sm().child(rtl("לשוניות לייצוא")))
+                        .child(div().text_sm().font_semibold().text_color(ui::ink()).child(rtl("לשוניות לייצוא")))
                         .child(
                             div()
                                 .flex()
@@ -196,11 +205,11 @@ impl App {
                     this.child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x6b7280))
+                            .text_color(ui::muted())
                             .child(rtl_paragraph("לשוניות הניתוח יהיו זמינות לייצוא אחרי שהניתוח יופק.")),
                     )
                 })
-                .child(div().text_sm().child(rtl("פורמטים")))
+                .child(div().text_sm().font_semibold().text_color(ui::ink()).child(rtl("פורמטים")))
                 .child(div().v_flex().gap_2().children(checkboxes))
                 .when(
                     !self.export_sections.is_empty()
@@ -209,7 +218,7 @@ impl App {
                         this.child(
                             div()
                                 .text_xs()
-                                .text_color(rgb(0x6b7280))
+                                .text_color(ui::muted())
                                 .child(rtl_paragraph("כתוביות וחותמות זמן זמינות לתמלול בלבד.")),
                         )
                     },
@@ -220,8 +229,8 @@ impl App {
                         .flex_row_reverse()
                         .items_center()
                         .gap_2()
-                        .child(Button::new("pick-export-dir").ghost().label(rtl("בחירת תיקייה")).on_click(cx.listener(|this, _, _, cx| this.pick_export_dir(cx))))
-                        .child(div().flex_1().min_w_0().truncate().text_xs().text_color(rgb(0x6b7280)).child(rtl(&dir_label))),
+                        .child(Button::new("pick-export-dir").secondary().compact().icon(ui::icon(Ic::FolderOpen, 15.0, ui::subtle())).label(rtl("בחירת תיקייה")).on_click(cx.listener(|this, _, _, cx| this.pick_export_dir(cx))))
+                        .child(div().flex_1().min_w_0().truncate().text_xs().text_color(ui::muted()).child(rtl(&dir_label))),
                 )
                 .child(
                     div()
@@ -231,6 +240,7 @@ impl App {
                         .child(
                             Button::new("submit-export")
                                 .primary()
+                                .icon(ui::icon(Ic::FileDown, 15.0, gpui_kit::rgb(0xffffff)))
                                 .label(rtl(if self.export_busy { "מייצא…" } else { "ייצוא" }))
                                 .disabled(
                                     self.export_formats.is_empty()
@@ -389,16 +399,16 @@ impl App {
                 .w(px(560.))
                 .v_flex()
                 .gap_3()
-                .child(div().text_lg().child(rtl("תמלול מקישור Zoom")))
+                .child(ui::section_header(Ic::Link, Tone::Accent, "תמלול מקישור Zoom", Some("ייבוא הקלטת ענן מקישור שיתוף")))
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x6b7280))
+                        .text_color(ui::muted())
                         .child(rtl_paragraph("הדביקו קישור להקלטת ענן. ההקלטה תורד למחשב שלכם ותתומלל מקומית.")),
                 )
-                .child(Input::new(&url_state))
+                .child(url_state.clone())
                 .when(self.zoom_needs_passcode, |this| {
-                    this.child(Input::new(&passcode_state))
+                    this.child(passcode_state.clone())
                 })
                 .when(running, |this| {
                     let p = status.as_ref().map(|s| s.percent).unwrap_or(0.0);
@@ -406,14 +416,14 @@ impl App {
                         div()
                             .rounded_lg()
                             .border_1()
-                            .border_color(rgb(0xc7d2fe))
-                            .bg(rgb(0xeef2ff))
+                            .border_color(ui::accent_border())
+                            .bg(ui::accent_bg())
                             .p_3()
                             .v_flex()
                             .gap_2()
                             .child(div().text_sm().child(rtl(if status.as_ref().map(|s| s.state.as_str()).unwrap_or("") == "resolving" { "מאתר את ההקלטה…" } else { "מוריד את ההקלטה…" })))
                             .when(status.as_ref().map(|s| !s.title.is_empty()).unwrap_or(false), |this| {
-                                this.child(div().text_xs().text_color(rgb(0x4b5563)).child(rtl(&status.as_ref().unwrap().title)))
+                                this.child(div().text_xs().text_color(ui::subtle()).child(rtl(&status.as_ref().unwrap().title)))
                             })
                             .child(
                                 // Fills from the right, like the rest of the
@@ -424,16 +434,16 @@ impl App {
                                     .w_full()
                                     .h_2()
                                     .rounded_full()
-                                    .bg(rgb(0xe5e7eb))
+                                    .bg(ui::border())
                                     .child(
                                         div()
                                             .h_full()
                                             .rounded_full()
-                                            .bg(rgb(0x4f46e5))
+                                            .bg(ui::accent())
                                             .w(relative(p.clamp(0.0, 1.0) as f32)),
                                     ),
                             )
-                            .child(div().text_xs().text_color(rgb(0x4b5563)).child(rtl(&format!(
+                            .child(div().text_xs().text_color(ui::subtle()).child(rtl(&format!(
                                 "{} · {} מתוך {}",
                                 format_percent(p),
                                 format_bytes(status.as_ref().map(|s| s.downloaded_bytes).unwrap_or(0)),
@@ -442,12 +452,12 @@ impl App {
                     )
                 })
                 .when(error.is_some(), |this| {
-                    this.child(div().text_sm().text_color(rgb(0xdc2626)).child(rtl_paragraph(error.clone().unwrap_or_default())))
+                    this.child(div().text_sm().text_color(ui::danger()).child(rtl_paragraph(error.clone().unwrap_or_default())))
                 })
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(0x9ca3af))
+                        .text_color(ui::faint())
                         .child(rtl_paragraph("ההורדה מתבצעת ישירות מ-Zoom אל המחשב שלכם. השתמשו רק בהקלטות שיש לכם הרשאה אליהן.")),
                 )
                 .child(
@@ -655,7 +665,7 @@ impl App {
                 div()
                     .rounded_lg()
                     .border_1()
-                    .border_color(rgb(0xe5e7eb))
+                    .border_color(ui::border())
                     .p_3()
                     .v_flex()
                     .gap_1()
@@ -672,11 +682,11 @@ impl App {
                                     .items_center()
                                     .gap_2()
                                     .text_xs()
-                                    .text_color(rgb(0x6b7280))
+                                    .text_color(ui::muted())
                                     .child(rtl(&format_clock(start)))
                                     .when(speaker_label.is_some(), |this| {
                                         this.child(
-                                            div().text_xs().text_color(rgb(0x4f46e5)).child(rtl(
+                                            div().text_xs().text_color(ui::accent()).child(rtl(
                                                 &speaker_label.clone().unwrap_or_default(),
                                             )),
                                         )
@@ -706,7 +716,7 @@ impl App {
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(rgb(0xdc2626))
+                                        .text_color(ui::danger())
                                         .whitespace_nowrap()
                                         .child(rtl("לפני:")),
                                 )
@@ -715,7 +725,7 @@ impl App {
                                         .flex_1()
                                         .min_w_0()
                                         .text_xs()
-                                        .text_color(rgb(0x991b1b))
+                                        .text_color(ui::danger_text())
                                         .line_through()
                                         .child(rtl_paragraph(&original)),
                                 ),
@@ -730,7 +740,7 @@ impl App {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(rgb(0x059669))
+                                    .text_color(ui::success())
                                     .whitespace_nowrap()
                                     .child(rtl("אחרי:")),
                             )
@@ -739,7 +749,7 @@ impl App {
                                     .flex_1()
                                     .min_w_0()
                                     .text_xs()
-                                    .text_color(rgb(0x065f46))
+                                    .text_color(ui::success())
                                     .child(rtl_paragraph(&corrected)),
                             ),
                     )
@@ -761,7 +771,7 @@ impl App {
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x6b7280))
+                        .text_color(ui::muted())
                         .child(rtl_paragraph(
                             "מה ש-DeepSeek שינה בכל מקטע: אדום עם קו חוצה — הוסר, ירוק — נוסף במקומו. \"דילוג למקטע\" מנגן אותו בתמליל.",
                         )),
@@ -770,7 +780,7 @@ impl App {
                     this.child(
                         div()
                             .text_sm()
-                            .text_color(rgb(0x6b7280))
+                            .text_color(ui::muted())
                             .child(rtl_paragraph("אין מקטעים שתוקנו בהגהה בתמליל הנוכחי.")),
                     )
                 })
@@ -811,14 +821,14 @@ fn changed_words(runs: Vec<DiffRun>) -> AnyElement {
                     .rounded_md()
                     .whitespace_nowrap()
                     .bg(if removed {
-                        rgb(0xdc2626).opacity(0.08)
+                        ui::danger().opacity(0.08)
                     } else {
-                        rgb(0x059669).opacity(0.08)
+                        ui::success().opacity(0.08)
                     })
                     .text_color(if removed {
-                        rgb(0xdc2626)
+                        ui::danger()
                     } else {
-                        rgb(0x059669)
+                        ui::success()
                     })
                     .when(removed, |this| this.line_through())
                     .child(rtl(word))
@@ -839,22 +849,28 @@ fn changed_words(runs: Vec<DiffRun>) -> AnyElement {
         .into_any_element()
 }
 
-fn modal(cx: &mut Context<App>, content: impl IntoElement) -> AnyElement {
+pub(crate) fn modal(_cx: &mut Context<App>, content: impl IntoElement) -> AnyElement {
     div()
         .absolute()
         .inset_0()
-        .bg(rgb(0x000000).opacity(0.4))
+        .occlude()
+        .bg(ui::scrim())
         .flex()
         .flex_row_reverse()
         .items_center()
         .justify_center()
-        .p_4()
+        .p_6()
         .child(
             div()
-                .rounded_lg()
-                .bg(cx.theme().background)
-                .p_5()
-                .child(content),
+                .max_h_full()
+                .rounded_2xl()
+                .border_1()
+                .border_color(ui::border())
+                .bg(ui::surface())
+                .shadow_xl()
+                .p_6()
+                .v_flex()
+                .child(div().min_h_0().overflow_y_scrollbar().child(content)),
         )
         .into_any_element()
 }

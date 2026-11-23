@@ -228,6 +228,7 @@ pub fn stage_label(stage: JobStage) -> &'static str {
         JobStage::Transcribing => "מתמלל",
         JobStage::Diarizing => "מזהה דוברים",
         JobStage::Proofreading => "מגיה את התמליל",
+        JobStage::Analyzing => "מנתח את התמליל",
         JobStage::GeneratingSubtitles => "מייצר כתוביות",
         JobStage::Exporting => "מייצא",
         JobStage::Done => "הושלם",

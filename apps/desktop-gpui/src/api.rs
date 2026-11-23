@@ -91,24 +91,45 @@ impl ApiError {
 #[derive(Clone)]
 pub struct Api {
     http: reqwest::Client,
-    base_url: String,
-    token: String,
+    /// `(base_url, token)`, filled in once the backend finishes starting so the
+    /// window can open before the backend is ready.
+    conn: std::sync::Arc<std::sync::RwLock<Option<(String, String)>>>,
     rt: tokio::runtime::Handle,
 }
 
 impl Api {
-    pub fn new(base_url: String, token: String, rt: tokio::runtime::Handle) -> Self {
+    pub fn new(rt: tokio::runtime::Handle) -> Self {
         let http = reqwest::Client::builder().build().expect("build http client");
         Self {
             http,
-            base_url,
-            token,
+            conn: Default::default(),
             rt,
         }
     }
 
-    pub fn base_url(&self) -> &str {
-        &self.base_url
+    /// Point the client at a running backend.
+    pub fn connect(&self, base_url: String, token: String) {
+        if let Ok(mut guard) = self.conn.write() {
+            *guard = Some((base_url, token));
+        }
+    }
+
+    fn base_url(&self) -> String {
+        self.conn
+            .read()
+            .ok()
+            .and_then(|c| c.as_ref().map(|c| c.0.clone()))
+            // Nothing listens here, so a request before the backend is up
+            // fails fast as "unreachable" instead of panicking.
+            .unwrap_or_else(|| "http://127.0.0.1:1".to_string())
+    }
+
+    fn token(&self) -> String {
+        self.conn
+            .read()
+            .ok()
+            .and_then(|c| c.as_ref().map(|c| c.1.clone()))
+            .unwrap_or_default()
     }
 
     pub fn rt(&self) -> &tokio::runtime::Handle {
@@ -116,33 +137,33 @@ impl Api {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base_url, path)
+        format!("{}{}", self.base_url(), path)
     }
 
     fn get(&self, path: &str) -> RequestBuilder {
         self.http
             .get(self.url(path))
-            .header("X-Tiktuv-Token", self.token.as_str())
+            .header("X-Tiktuv-Token", self.token())
     }
 
     fn post_json(&self, path: &str, body: impl Serialize) -> RequestBuilder {
         self.http
             .post(self.url(path))
-            .header("X-Tiktuv-Token", self.token.as_str())
+            .header("X-Tiktuv-Token", self.token())
             .json(&body)
     }
 
     fn put_json(&self, path: &str, body: impl Serialize) -> RequestBuilder {
         self.http
             .put(self.url(path))
-            .header("X-Tiktuv-Token", self.token.as_str())
+            .header("X-Tiktuv-Token", self.token())
             .json(&body)
     }
 
     fn delete(&self, path: &str) -> RequestBuilder {
         self.http
             .delete(self.url(path))
-            .header("X-Tiktuv-Token", self.token.as_str())
+            .header("X-Tiktuv-Token", self.token())
     }
 
     /// Drive a request future on the Tokio runtime and await it on this executor.
@@ -455,6 +476,15 @@ impl Api {
         .await
     }
 
+    pub async fn deepseek_balance(&self) -> Result<DeepSeekBalance, ApiError> {
+        let req = self.get("/api/deepseek/balance");
+        self.run(async move {
+            let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
+            Self::parse(resp).await
+        })
+        .await
+    }
+
     pub async fn set_deepseek_key(&self, api_key: &str) -> Result<DeepSeekStatus, ApiError> {
         let req = self.put_json("/api/deepseek/key", serde_json::json!({ "api_key": api_key }));
         self.run(async move {
@@ -543,6 +573,42 @@ impl Api {
     /// per batch of segments — so callers show progress and do not time out.
     pub async fn proofread(&self, id: &str) -> Result<Transcript, ApiError> {
         let req = self.post_json(&format!("/api/jobs/{id}/proofread"), serde_json::json!({}));
+        self.run(async move {
+            let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
+            Self::parse(resp).await
+        })
+        .await
+    }
+
+    /// Recognise the speakers of the stored transcript. `method` is
+    /// `"soniox"` (acoustic; uploads the recording) or `"deepseek"` (reads the
+    /// text). Slow by nature, so callers show a busy state.
+    pub async fn identify_speakers(
+        &self,
+        id: &str,
+        method: &str,
+        suggest_names: bool,
+        expected: Option<u32>,
+    ) -> Result<IdentifySpeakersResponse, ApiError> {
+        let req = self.post_json(
+            &format!("/api/jobs/{id}/speakers"),
+            serde_json::json!({
+                "method": method,
+                "suggest_names": suggest_names,
+                "expected_speakers": expected,
+            }),
+        );
+        self.run(async move {
+            let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
+            Self::parse(resp).await
+        })
+        .await
+    }
+
+    /// Look for real names for speakers who are still "דובר N". Nothing is
+    /// re-recognised and names the user typed are never overwritten.
+    pub async fn find_speaker_names(&self, id: &str) -> Result<IdentifySpeakersResponse, ApiError> {
+        let req = self.post_json(&format!("/api/jobs/{id}/speakers/names"), serde_json::json!({}));
         self.run(async move {
             let resp = req.send().await.map_err(|_| ApiError::unreachable())?;
             Self::parse(resp).await
@@ -677,13 +743,26 @@ impl Api {
         .await
     }
 
+    /// URL of the recording as audio on the transcript's own timeline.
+    ///
+    /// The player uses this rather than the raw media: the backend decodes it
+    /// the way the transcription did, so the highlighted line and the sound
+    /// cannot drift apart, and every container and codec plays.
+    pub fn playback_url(&self, id: &str) -> String {
+        format!(
+            "{}/api/jobs/{id}/playback?token={}",
+            self.base_url(),
+            urlencode(&self.token())
+        )
+    }
+
     /// URL for streaming media. The token rides as a query parameter because
     /// media/byte-stream fetches cannot send headers.
     pub fn media_url(&self, id: &str) -> String {
         format!(
             "{}/api/jobs/{id}/media?token={}",
-            self.base_url,
-            urlencode(&self.token)
+            self.base_url(),
+            urlencode(&self.token())
         )
     }
 }

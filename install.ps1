@@ -227,8 +227,8 @@ if (Test-Path $appExe) {
 
 # -- 6. shortcut -----------------------------------------------------------
 Write-Step "Creating the Desktop shortcut"
-# The icon is generated from a font glyph rather than committed as a binary.
-$iconPath = Join-Path $repoRoot 'apps\desktop-gpui\assets\icon.ico'
+# Use the same multi-resolution artwork embedded in the application EXE.
+$iconPath = Join-Path $repoRoot 'apps\desktop-gpui\assets\tiktuv.ico'
 if (-not (Test-Path $iconPath)) {
     & $venvPython (Join-Path $repoRoot 'scripts\make-icon.py') | Out-Null
 }

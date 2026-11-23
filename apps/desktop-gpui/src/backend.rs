@@ -42,7 +42,7 @@ struct LockPayload {
 }
 
 /// Where the backend keeps its data, mirroring `Settings._default_data_dir`.
-fn default_data_dir() -> PathBuf {
+pub(crate) fn default_data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("TIKTUV_DATA_DIR") {
         return PathBuf::from(dir);
     }
@@ -214,7 +214,7 @@ impl BackendProcess {
         command
             .args(&args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(if cfg!(debug_assertions) { Stdio::inherit() } else { Stdio::null() })
             .stdin(Stdio::null());
 
         // Packaged build: keep data, models and FFmpeg inside the folder so the
@@ -283,6 +283,12 @@ impl BackendProcess {
         let handshake: Handshake = serde_json::from_str(&raw)
             .map_err(|error| BackendError::Handshake(error.to_string()))?;
 
+        // The backend prints READY before uvicorn binds (app construction and
+        // database setup still run), so wait until the port actually accepts.
+        while Instant::now() < deadline && !port_is_open(handshake.port) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
         Ok(Self {
             child: Mutex::new(Some(child)),
             handshake,
@@ -304,4 +310,26 @@ impl Drop for BackendProcess {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+// -- interface preferences ---------------------------------------------------
+fn preferences_path() -> PathBuf {
+    default_data_dir().join("ui.json")
+}
+
+/// Whether the dark theme was chosen last time.
+pub fn load_theme_preference() -> bool {
+    std::fs::read_to_string(preferences_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| value.get("dark").and_then(|v| v.as_bool()))
+        .unwrap_or(false)
+}
+
+pub fn save_theme_preference(dark: bool) {
+    let path = preferences_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, serde_json::json!({ "dark": dark }).to_string());
 }

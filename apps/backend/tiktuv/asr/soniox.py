@@ -139,6 +139,30 @@ class SonioxTranscriber:
         finally:
             self._cleanup(transcription_id, file_id)
 
+    def speaker_turns(
+        self, samples: np.ndarray[Any, np.dtype[np.float32]], sample_rate: int,
+        settings: TranscriptionSettings,
+    ) -> list[SpeakerTurn]:
+        """Who spoke when in one window of audio, ignoring the words.
+
+        Used to label a transcript a *different* engine produced: the audio
+        goes to Soniox, the speaker turns come back, and the caller aligns them
+        to its own segments. Soniox decides speakers acoustically, so this is
+        the accurate way to tell voices apart.
+        """
+        samples = np.asarray(samples, dtype=np.float32)
+        if samples.size == 0:
+            return []
+        file_id = self._upload(_encode_wav(samples, sample_rate))
+        transcription_id: str | None = None
+        try:
+            transcription_id = self._create(file_id, settings)
+            _text, tokens = self._await_result(transcription_id)
+            words = _smooth_word_speakers(_words_from_tokens(tokens))
+            return _turns_from_words(words)
+        finally:
+            self._cleanup(transcription_id, file_id)
+
     def unload(self) -> None:
         with contextlib.suppress(Exception):  # pragma: no cover - best effort
             self._client.close()
@@ -353,6 +377,64 @@ def _words_from_tokens(tokens: list[_Token]) -> list[_TokenWord]:
     return words
 
 
+#: A run of words by one speaker this short, between two runs of another, is a
+#: diarization flicker rather than a person: it is handed to the surrounding
+#: speaker. Real interjections ("כן", "נכון") are one word, so the limit is
+#: tight — a speaker who says two or more words, or speaks for a second, stays.
+_FLICKER_MAX_WORDS = 1
+_FLICKER_MAX_SECONDS = 0.6
+
+
+def _smooth_word_speakers(words: list[_TokenWord]) -> list[_TokenWord]:
+    """Remove one-word speaker flickers inside another speaker's speech."""
+    if len(words) < 3:
+        return words
+    result = list(words)
+    changed = True
+    while changed:
+        changed = False
+        runs: list[tuple[int, int]] = []  # [start, end) index ranges of equal speaker
+        begin = 0
+        for index in range(1, len(result) + 1):
+            if index == len(result) or result[index].speaker != result[begin].speaker:
+                runs.append((begin, index))
+                begin = index
+        for position in range(1, len(runs) - 1):
+            lo, hi = runs[position]
+            before = result[runs[position - 1][0]].speaker
+            after = result[runs[position + 1][0]].speaker
+            here = result[lo].speaker
+            length = result[hi - 1].end - result[lo].start
+            if (
+                here != before
+                and before == after
+                and hi - lo <= _FLICKER_MAX_WORDS
+                and length <= _FLICKER_MAX_SECONDS
+            ):
+                for index in range(lo, hi):
+                    result[index] = _TokenWord(
+                        text=result[index].text,
+                        start=result[index].start,
+                        end=result[index].end,
+                        speaker=before,
+                    )
+                changed = True
+                break
+    return result
+
+
+def _turns_from_words(words: list[_TokenWord]) -> list[SpeakerTurn]:
+    turns: list[SpeakerTurn] = []
+    for word in words:
+        if word.speaker is None:
+            continue
+        if turns and turns[-1].speaker == word.speaker and word.start - turns[-1].end < 2.0:
+            turns[-1] = SpeakerTurn(turns[-1].start, max(turns[-1].end, word.end), word.speaker)
+        else:
+            turns.append(SpeakerTurn(word.start, max(word.end, word.start), word.speaker))
+    return turns
+
+
 def _segments_from_tokens(
     tokens: list[_Token],
     *,
@@ -366,7 +448,7 @@ def _segments_from_tokens(
     pause, or once a segment gets too long. Returns ``[]`` when the tokens
     carry no usable timings, so the caller can fall back to the text.
     """
-    words = _words_from_tokens(tokens)
+    words = _smooth_word_speakers(_words_from_tokens(tokens))
     if not words or all(word.end <= 0.0 for word in words):
         return []
 

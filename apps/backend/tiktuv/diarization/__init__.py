@@ -1,27 +1,21 @@
-"""Optional speaker diarization.
+"""Speaker recognition building blocks.
 
-**Status: interface only, no backend bundled.** Diarization is off by default
-and Tiktuv ships without a diarization model. This is a deliberate call:
+Speakers are recognised by two engines, orchestrated in :mod:`tiktuv.speakers`:
 
-* ``pyannote/speaker-diarization-3.1`` is the reliable open-source option, but
-  it is a *gated* Hugging Face repo. Using it requires the user to create an
-  account, accept two separate model licences and paste an access token — an
-  account and a network round-trip, in an application whose entire promise is
-  that it works locally with no sign-in.
-* Bundling the weights ourselves is not permitted by that licence.
+* **Soniox** — acoustic. Tells voices apart in the audio; its turns are aligned
+  onto the transcript by :mod:`tiktuv.diarization.turns`, which also smooths
+  flicker and splits a segment where the speaker changes mid-line.
+* **DeepSeek** — semantic. :mod:`tiktuv.diarization.deepseek` reads the
+  transcript and decides who speaks, using only text.
 
-So the feature lives behind the stable :class:`DiarizationBackend` interface
-below. Registering a working backend is the *only* change needed to turn it on
-— the job pipeline, the schema (``Segment.speaker``), the transcript store, the
-editor's rename UI, and every exporter already handle speakers end to end.
+This module holds what both share: the :class:`SpeakerTurn` type, the
+Hebrew display labels ("דובר 1"), and :func:`link_window_speakers`, which keeps
+speaker ids stable across the windows of a long recording.
 
-To enable it locally, install ``pyannote.audio``, accept the model licences,
-and register a backend at startup::
-
-    from tiktuv.diarization import register_backend
-    register_backend(MyPyannoteBackend(token=...))
-
-See docs/architecture.md#diarization.
+A local diarization model can still be plugged in through
+:func:`register_backend`; none is bundled, because the reliable open-source one
+(pyannote) is a gated Hugging Face repository that needs an account and token,
+which does not fit an application that works without sign-in.
 """
 
 from __future__ import annotations

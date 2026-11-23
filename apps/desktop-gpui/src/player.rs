@@ -76,8 +76,13 @@ impl Player {
     fn build_sink(&mut self, path: &Path, start: Duration) -> Result<Option<Duration>, String> {
         let file = std::fs::File::open(path)
             .map_err(|e| format!("לא ניתן לפתוח את המדיה: {e}"))?;
-        let decoder = rodio::Decoder::new(std::io::BufReader::new(file))
-            .map_err(|e| format!("לא ניתן לפענח את המדיה: {e}"))?;
+        // The decoder panics, rather than returning an error, on some files.
+        // A recording it cannot read must be a message, not a crash.
+        let decoder = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rodio::Decoder::new(std::io::BufReader::new(file))
+        }))
+        .map_err(|_| "פורמט המדיה אינו נתמך לניגון.".to_string())?
+        .map_err(|e| format!("לא ניתן לפענח את המדיה: {e}"))?;
         let duration = decoder.total_duration();
 
         let sink = rodio::Sink::try_new(&self.handle)
@@ -117,6 +122,27 @@ impl Player {
     }
 
     pub fn play(&mut self) {
+        // A recording that played to its end has nothing left in its sink, and
+        // a drained sink cannot be restarted — so playing again means building
+        // a fresh one at the beginning.
+        if self.sink.is_some() && self.ended() {
+            if let Some(path) = self.path.clone() {
+                self.stop();
+                match self.build_sink(&path, Duration::ZERO) {
+                    Ok(duration) => {
+                        if duration.is_some() {
+                            self.duration = duration;
+                        }
+                        self.offset = Duration::ZERO;
+                        self.error = None;
+                    }
+                    Err(message) => {
+                        self.error = Some(message);
+                        return;
+                    }
+                }
+            }
+        }
         if let Some(sink) = &self.sink {
             sink.play();
             self.playing = true;
@@ -145,7 +171,9 @@ impl Player {
             _ => target,
         };
 
+        // A drained sink accepts a seek and then plays nothing: rebuild instead.
         if let Some(sink) = &self.sink
+            && !sink.empty()
             && sink.try_seek(target).is_ok()
         {
             // The sink now counts from the target itself.

@@ -34,6 +34,7 @@ class JobStage(StrEnum):
     TRANSCRIBING = "transcribing"              # מתמלל
     DIARIZING = "diarizing"                    # מזהה דוברים
     PROOFREADING = "proofreading"              # מגיה את התמליל
+    ANALYZING = "analyzing"                    # מנתח את התמליל
     GENERATING_SUBTITLES = "generating_subtitles"  # מייצר כתוביות
     EXPORTING = "exporting"                    # מייצא
     DONE = "done"                              # הושלם
@@ -43,6 +44,17 @@ class Language(StrEnum):
     HEBREW = "he"
     ENGLISH = "en"
     AUTO = "auto"
+
+
+class SpeakerMethod(StrEnum):
+    """How speakers are told apart (see :mod:`tiktuv.speakers`)."""
+
+    #: DeepSeek when a key exists. Never uploads audio on its own.
+    AUTO = "auto"
+    #: Acoustic: the recording is analysed by Soniox (uploads the audio).
+    SONIOX = "soniox"
+    #: Semantic: DeepSeek reads the transcript text.
+    DEEPSEEK = "deepseek"
 
 
 class DevicePreference(StrEnum):
@@ -147,8 +159,16 @@ class TranscriptionSettings(BaseModel):
     #: this only removes the extra click.
     auto_download_model: bool = True
 
-    # Optional module — see tiktuv/diarization.
-    enable_diarization: bool = False
+    # Speaker recognition — see tiktuv/speakers.py. On by default: a job is
+    # only "done" once the whole pipeline has run, speakers included. Without a
+    # DeepSeek or Soniox key the step is skipped with a note, never an error.
+    enable_diarization: bool = True
+    speaker_method: SpeakerMethod = SpeakerMethod.AUTO
+    #: How many people speak, when the user knows — sharpens the text method.
+    expected_speakers: Annotated[int, Field(ge=1, le=10)] | None = None
+    #: Use a real name instead of "דובר N" whenever the transcript says one
+    #: (needs DeepSeek; without a key speakers simply keep their numbers).
+    suggest_speaker_names: bool = True
 
     #: Hand the finished transcript to DeepSeek, acting as a professional
     #: Hebrew copy-editor, to fix transcription mistakes. Needs a DeepSeek API
@@ -157,6 +177,10 @@ class TranscriptionSettings(BaseModel):
     enable_proofreading: bool = True
     #: The DeepSeek model that proofreads. Empty means the module default.
     proofread_model: str = Field(default="", max_length=120)
+    #: Have DeepSeek write the AI analysis (summary, key points, tasks, entities,
+    #: speaker summaries, quotes) as the last step, so it is ready when the job
+    #: finishes instead of on first opening a tab. Needs a DeepSeek key.
+    enable_analysis: bool = True
 
     output_dir: str | None = None
     export_formats: list[ExportFormat] = Field(default_factory=list)
@@ -587,3 +611,24 @@ class SystemInfo(BaseModel):
     devices: list[DeviceInfo] = Field(default_factory=list)
     checks: list[PreflightCheck] = Field(default_factory=list)
     storage: StorageUsage | None = None
+
+
+# --------------------------------------------------------------------------
+# Speaker recognition on a finished transcript
+# --------------------------------------------------------------------------
+class IdentifySpeakersRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    method: SpeakerMethod = SpeakerMethod.AUTO
+    suggest_names: bool = True
+    #: Optional hint when the user knows how many people are speaking.
+    expected_speakers: Annotated[int, Field(ge=1, le=10)] | None = None
+
+
+class IdentifySpeakersResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transcript: Transcript
+    method: SpeakerMethod
+    speaker_count: int
+    notes: list[str] = Field(default_factory=list)

@@ -25,6 +25,7 @@ VTT and JSON — stays in logical order.
 from __future__ import annotations
 
 import os
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -107,6 +108,62 @@ def register_fonts() -> tuple[str, str]:
     return FONT_NAME, FONT_NAME_BOLD
 
 
+_MIRROR_PAIRS = str.maketrans("()[]{}<>«»", ")(][}{><»«")
+
+
+def _strong_direction(char: str) -> str | None:
+    """``"L"``, ``"R"`` or ``None`` (neutral) for one character."""
+    kind = unicodedata.bidirectional(char)
+    if kind == "L":
+        return "L"
+    if kind in ("R", "AL"):
+        return "R"
+    if kind in ("EN", "AN"):
+        return "N"  # digits take the direction of the text before them
+    return None
+
+
+def mirror_rtl_brackets(text: str) -> str:
+    """Swap brackets that sit inside right-to-left runs.
+
+    python-bidi 0.6 only reorders; it does not mirror paired characters, so a
+    Hebrew ``(גרסה)`` would paint as ``)גרסה(``. A bracket reads right-to-left
+    unless it is enclosed by left-to-right text on both sides (UAX #9, N1/N2,
+    with the paragraph direction being RTL). Swapping it in logical order
+    before reordering gives the mirrored glyph in the right place.
+    """
+    if not any(ch in "()[]{}<>«»" for ch in text):
+        return text
+
+    # Direction of the nearest strong character on each side of every index.
+    before: list[str] = []
+    last = "R"
+    for ch in text:
+        kind = _strong_direction(ch)
+        if kind == "N":  # a digit continues an L context, otherwise it is R
+            kind = "L" if last == "L" else "R"
+        if kind is not None:
+            last = kind
+        before.append(last)
+
+    after: list[str] = [""] * len(text)
+    nxt = "R"
+    for index in range(len(text) - 1, -1, -1):
+        kind = _strong_direction(text[index])
+        if kind == "N":
+            kind = "L" if before[index] == "L" else "R"
+        if kind is not None:
+            nxt = kind
+        after[index] = nxt
+
+    out = []
+    for index, ch in enumerate(text):
+        if ch in "()[]{}<>«»" and not (before[index] == "L" and after[index] == "L"):
+            ch = ch.translate(_MIRROR_PAIRS)
+        out.append(ch)
+    return "".join(out)
+
+
 def shape_rtl(text: str) -> str:
     """Convert one *already wrapped* line from logical to visual order.
 
@@ -115,7 +172,7 @@ def shape_rtl(text: str) -> str:
     """
     if not text:
         return text
-    shaped: str = get_display(text, base_dir="R")
+    shaped: str = get_display(mirror_rtl_brackets(text), base_dir="R")
     return shaped
 
 

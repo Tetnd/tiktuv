@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -173,9 +174,12 @@ class TestVtt:
         content = get_exporter(ExportFormat.VTT).write(context).read_text(encoding="utf-8")
         assert "00:00:00.000 --> " in content
 
-    def test_declares_rtl_direction(self, context: ExportContext) -> None:
+    def test_cue_lines_open_with_rlm(self, context: ExportContext) -> None:
+        """WebVTT has no RTL cue setting, so each text line carries an RLM."""
         content = get_exporter(ExportFormat.VTT).write(context).read_text(encoding="utf-8")
-        assert "direction:rl" in content
+        assert "direction:" not in content
+        text_lines = [ln for ln in content.splitlines() if re.search("[א-ת]", ln)]
+        assert text_lines and all(ln.startswith("‏") for ln in text_lines)
 
 
 class TestJson:
@@ -223,9 +227,21 @@ class TestDocx:
         xml = self._document_xml(get_exporter(ExportFormat.DOCX).write(context))
         assert 'w:cs="David"' in xml
 
-    def test_paragraphs_are_right_aligned(self, context: ExportContext) -> None:
+    def test_paragraphs_start_on_the_right(self, context: ExportContext) -> None:
+        """``jc`` is logical in a bidi paragraph: ``right`` would pin text to the left."""
         xml = self._document_xml(get_exporter(ExportFormat.DOCX).write(context))
-        assert 'w:val="right"' in xml
+        assert "<w:bidi " in xml
+        assert 'w:jc w:val="right"' not in xml
+        assert 'w:jc w:val="left"' not in xml
+
+    def test_pdf_brackets_are_mirrored_in_rtl_runs(self) -> None:
+        from tiktuv.exports.pdf_export import shape_rtl
+
+        # Visual order is left to right: an enclosing pair must read "(" … ")".
+        shaped = shape_rtl("היום (גרסה 3.5).")
+        assert shaped.index("(") < shaped.index(")")
+        # A bracket pair wrapped around Latin text stays as-is.
+        assert shape_rtl("א (hello) ב").index("(") < shape_rtl("א (hello) ב").index(")")
 
     def test_text_is_stored_in_logical_order(self, context: ExportContext) -> None:
         xml = self._document_xml(get_exporter(ExportFormat.DOCX).write(context))

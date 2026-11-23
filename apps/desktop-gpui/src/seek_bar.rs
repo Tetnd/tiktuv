@@ -9,6 +9,7 @@
 //! player keeps the start of the recording on the left, Hebrew interface or
 //! not.
 
+use crate::ui;
 use std::rc::Rc;
 
 use gpui_kit::{
@@ -109,9 +110,9 @@ impl Element for SeekBar {
         };
         let radius = TRACK_HEIGHT / 2.;
 
-        window.paint_quad(fill(track, rgb(0xe5e7eb)).corner_radii(radius));
+        window.paint_quad(fill(track, ui::border()).corner_radii(radius));
         if played.size.width > px(0.) {
-            window.paint_quad(fill(played, rgb(0x4f46e5)).corner_radii(radius));
+            window.paint_quad(fill(played, ui::accent()).corner_radii(radius));
         }
         // The thumb, so the exact position is visible on a thin track.
         let thumb_size = px(12.);
@@ -122,7 +123,7 @@ impl Element for SeekBar {
             ),
             size: size(thumb_size, thumb_size),
         };
-        window.paint_quad(fill(thumb, rgb(0x4f46e5)).corner_radii(thumb_size / 2.));
+        window.paint_quad(fill(thumb, ui::accent()).corner_radii(thumb_size / 2.));
 
         let Some(on_seek) = self.on_seek.clone() else {
             return;

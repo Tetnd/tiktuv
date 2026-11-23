@@ -21,6 +21,7 @@ from .api import (
     routes_media,
     routes_proofread,
     routes_soniox,
+    routes_speakers,
     routes_system,
     routes_transcript,
 )
@@ -175,6 +176,7 @@ def create_app(settings: Settings | None = None, bus: EventBus | None = None) ->
         routes_deepseek,
         routes_analysis,
         routes_proofread,
+        routes_speakers,
     ):
         app.include_router(module.router)
 

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::*;
-use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
+use crate::rtl_field::{RtlField, RtlFieldEvent};
 use gpui_kit::component::{ActiveTheme, Disableable as _, Selectable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -22,7 +22,7 @@ use gpui_kit::{
 
 use crate::app::{App, Screen, ToastTone};
 use crate::format::*;
-use crate::rtl_edit::{rtl_input, rtl_textarea};
+use crate::ui::{self, Ic, Tone};
 use crate::rtl_text::rtl_paragraph;
 use crate::seek_bar::seek_bar;
 use crate::models::*;
@@ -51,7 +51,7 @@ const AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(600);
 /// pair is lossless, which is what makes editing through the field safe.
 pub struct SegmentEdit {
     pub index: usize,
-    pub input: Entity<InputState>,
+    pub input: Entity<RtlField>,
     /// The text as it was when the field opened, for `Esc`.
     pub original: String,
     /// All segments as they were when the field opened, pushed onto the undo
@@ -70,7 +70,7 @@ pub struct SegmentEdit {
 /// the row owns it so a removed row stops listening.
 pub struct EntityRow {
     pub key: u64,
-    pub name_input: Entity<InputState>,
+    pub name_input: Entity<RtlField>,
     _subscription: Subscription,
 }
 
@@ -82,7 +82,7 @@ pub struct EntityRow {
 /// owns it so a rebuilt row stops listening to the old field.
 pub struct SpeakerSummaryRow {
     pub key: u64,
-    pub summary_input: Entity<InputState>,
+    pub summary_input: Entity<RtlField>,
     _subscription: Subscription,
 }
 
@@ -95,8 +95,8 @@ pub struct SpeakerSummaryRow {
 /// `analysis.action_items`; the row owns them so a removed row stops listening.
 pub struct ActionItemRow {
     pub key: u64,
-    pub task_input: Entity<InputState>,
-    pub assignee_input: Entity<InputState>,
+    pub task_input: Entity<RtlField>,
+    pub assignee_input: Entity<RtlField>,
     _task_subscription: Subscription,
     _assignee_subscription: Subscription,
 }
@@ -110,7 +110,7 @@ pub struct ActionItemRow {
 /// removed row stops listening.
 pub struct KeyPointRow {
     pub key: u64,
-    pub input: Entity<InputState>,
+    pub input: Entity<RtlField>,
     _subscription: Subscription,
 }
 
@@ -123,8 +123,8 @@ pub struct KeyPointRow {
 /// the row owns them so a removed row stops listening.
 pub struct QuoteRow {
     pub key: u64,
-    pub speaker_input: Entity<InputState>,
-    pub quote_input: Entity<InputState>,
+    pub speaker_input: Entity<RtlField>,
+    pub quote_input: Entity<RtlField>,
     _speaker_subscription: Subscription,
     _quote_subscription: Subscription,
 }
@@ -265,7 +265,7 @@ pub struct EditorState {
     /// The תקציר field, editable in place like the other analysis tabs. It is
     /// multi-line — one logical line per row, no soft wrapping — so the field
     /// can span the whole page without breaking right-to-left rows mid-line.
-    pub summary_input: Entity<TextareaState>,
+    pub summary_input: Entity<RtlField>,
     /// Keeps the summary field's write-back subscription alive.
     pub _summary_subscription: Subscription,
     /// Summary edits have their own autosave, separate from the other tabs'
@@ -274,12 +274,12 @@ pub struct EditorState {
     pub summary_saving: bool,
     pub summary_save_token: u64,
     pub summary_save_state: SaveState,
-    pub search_query: Entity<InputState>,
-    pub search_replacement: Entity<InputState>,
+    pub search_query: Entity<RtlField>,
+    pub search_replacement: Entity<RtlField>,
     pub search_matches: Vec<usize>,
     pub search_active: usize,
     pub search_case_sensitive: bool,
-    pub speaker_inputs: HashMap<String, Entity<InputState>>,
+    pub speaker_inputs: HashMap<String, Entity<RtlField>>,
 }
 
 impl EditorState {
@@ -292,8 +292,8 @@ impl EditorState {
     ) -> Self {
         let segments = transcript.segments.clone();
         let speakers = transcript.speakers.clone();
-        let search_query = cx.new(|cx| InputState::new(window, cx).placeholder(rtl("חיפוש בתמליל…")));
-        let search_replacement = cx.new(|cx| InputState::new(window, cx).placeholder(rtl("החלפה ב…")));
+        let search_query = cx.new(|cx| RtlField::new(window, cx).placeholder("חיפוש בתמליל…"));
+        let search_replacement = cx.new(|cx| RtlField::new(window, cx).placeholder("החלפה ב…"));
 
         // The transcript is shown as reordered paragraphs, and the segment
         // being worked on is swapped for a text field in place (`begin_edit`).
@@ -337,14 +337,15 @@ impl EditorState {
         // analysis (and with it the summary text) loads only when the user
         // opens one of the analysis tabs. `rebuild_summary_input` fills it in.
         let summary_input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .placeholder(rtl("כתבו תקציר…"))
-                .soft_wrap(false)
+            RtlField::new(window, cx)
+                .placeholder("כתבו תקציר…")
+                .multiline(true)
+                .min_rows(16)
         });
         let _summary_subscription =
             cx.subscribe_in(&summary_input, window, move |this: &mut App, state, event, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    let summary = summary_logical_value(&state.read(cx).value().to_string());
+                if matches!(event, RtlFieldEvent::Change) {
+                    let summary = state.read(cx).value().to_string();
                     this.on_summary_edited(summary, cx);
                 }
             });
@@ -419,20 +420,6 @@ impl EditorState {
     }
 }
 
-/// The text the summary field holds: each logical line reordered into visual
-/// order on its own, so every row reads right-to-left inside the renderer's
-/// left-to-right text layout. Reordering per line also keeps all paragraphs —
-/// `format::rtl` itself stops at the first line break.
-fn summary_field_value(logical: &str) -> String {
-    logical.lines().map(rtl).collect::<Vec<_>>().join("\n")
-}
-
-/// The inverse of [`summary_field_value`]: the field's rows, read back into
-/// logical order for the analysis and the backend.
-fn summary_logical_value(field: &str) -> String {
-    field.lines().map(rtl).collect::<Vec<_>>().join("\n")
-}
-
 /// Build the rename field for one speaker plus the subscription that writes
 /// what is typed back into `EditorState::speakers`.
 fn speaker_input(
@@ -440,16 +427,16 @@ fn speaker_input(
     name: &str,
     window: &mut Window,
     cx: &mut Context<App>,
-) -> (Entity<InputState>, Subscription) {
+) -> (Entity<RtlField>, Subscription) {
     let state = cx.new(|cx| {
-        let mut s = InputState::new(window, cx);
-        s.set_value(rtl(name), window, cx);
+        let mut s = RtlField::new(window, cx);
+        s.set_value(name, window, cx);
         s
     });
-    let sub = cx.subscribe_in(&state, window, move |this: &mut App, state, event, _, cx| {
-        if matches!(event, InputEvent::Change) {
-            let name = rtl(&state.read(cx).value().to_string());
-            this.on_speaker_rename(key.clone(), name, cx);
+    let sub = cx.subscribe_in(&state, window, move |this: &mut App, state, event, window, cx| {
+        if matches!(event, RtlFieldEvent::Change) {
+            let name = state.read(cx).value().to_string();
+            this.on_speaker_rename(key.clone(), name, window, cx);
         }
     });
     (state, sub)
@@ -462,15 +449,15 @@ fn entity_name_input(
     name: &str,
     window: &mut Window,
     cx: &mut Context<App>,
-) -> (Entity<InputState>, Subscription) {
+) -> (Entity<RtlField>, Subscription) {
     let state = cx.new(|cx| {
-        let mut s = InputState::new(window, cx).placeholder(rtl("שם היישות"));
-        s.set_value(rtl(name), window, cx);
+        let mut s = RtlField::new(window, cx).placeholder("שם היישות");
+        s.set_value(name, window, cx);
         s
     });
     let sub = cx.subscribe_in(&state, window, move |this: &mut App, state, event, _, cx| {
-        if matches!(event, InputEvent::Change) {
-            let name = rtl(&state.read(cx).value().to_string());
+        if matches!(event, RtlFieldEvent::Change) {
+            let name = state.read(cx).value().to_string();
             this.on_entity_renamed(key, name, cx);
         }
     });
@@ -484,15 +471,15 @@ fn speaker_summary_input(
     summary: &str,
     window: &mut Window,
     cx: &mut Context<App>,
-) -> (Entity<InputState>, Subscription) {
+) -> (Entity<RtlField>, Subscription) {
     let state = cx.new(|cx| {
-        let mut s = InputState::new(window, cx).placeholder(rtl("סיכום הדובר"));
-        s.set_value(rtl(summary), window, cx);
+        let mut s = RtlField::new(window, cx).placeholder("סיכום הדובר");
+        s.set_value(summary, window, cx);
         s
     });
     let sub = cx.subscribe_in(&state, window, move |this: &mut App, state, event, _, cx| {
-        if matches!(event, InputEvent::Change) {
-            let summary = rtl(&state.read(cx).value().to_string());
+        if matches!(event, RtlFieldEvent::Change) {
+            let summary = state.read(cx).value().to_string();
             this.on_speaker_summary_edited(key, summary, cx);
         }
     });
@@ -507,26 +494,26 @@ fn action_item_inputs(
     assignee: Option<&str>,
     window: &mut Window,
     cx: &mut Context<App>,
-) -> (Entity<InputState>, Entity<InputState>, Subscription, Subscription) {
+) -> (Entity<RtlField>, Entity<RtlField>, Subscription, Subscription) {
     let task_state = cx.new(|cx| {
-        let mut s = InputState::new(window, cx).placeholder(rtl("המשימה"));
-        s.set_value(rtl(task), window, cx);
+        let mut s = RtlField::new(window, cx).placeholder("המשימה");
+        s.set_value(task, window, cx);
         s
     });
     let assignee_state = cx.new(|cx| {
-        let mut s = InputState::new(window, cx).placeholder(rtl("אחראי"));
-        s.set_value(assignee.map(rtl).unwrap_or_default(), window, cx);
+        let mut s = RtlField::new(window, cx).placeholder("אחראי");
+        s.set_value(assignee.unwrap_or_default(), window, cx);
         s
     });
     let task_sub = cx.subscribe_in(&task_state, window, move |this: &mut App, state, event, _, cx| {
-        if matches!(event, InputEvent::Change) {
-            let task = rtl(&state.read(cx).value().to_string());
+        if matches!(event, RtlFieldEvent::Change) {
+            let task = state.read(cx).value().to_string();
             this.on_action_task_edited(key, task, cx);
         }
     });
     let assignee_sub = cx.subscribe_in(&assignee_state, window, move |this: &mut App, state, event, _, cx| {
-        if matches!(event, InputEvent::Change) {
-            let assignee = rtl(&state.read(cx).value().to_string());
+        if matches!(event, RtlFieldEvent::Change) {
+            let assignee = state.read(cx).value().to_string();
             this.on_action_assignee_edited(key, assignee, cx);
         }
     });
@@ -540,15 +527,15 @@ fn key_point_input(
     text: &str,
     window: &mut Window,
     cx: &mut Context<App>,
-) -> (Entity<InputState>, Subscription) {
+) -> (Entity<RtlField>, Subscription) {
     let state = cx.new(|cx| {
-        let mut s = InputState::new(window, cx).placeholder(rtl("נקודת מפתח"));
-        s.set_value(rtl(text), window, cx);
+        let mut s = RtlField::new(window, cx).placeholder("נקודת מפתח");
+        s.set_value(text, window, cx);
         s
     });
     let sub = cx.subscribe_in(&state, window, move |this: &mut App, state, event, _, cx| {
-        if matches!(event, InputEvent::Change) {
-            let text = rtl(&state.read(cx).value().to_string());
+        if matches!(event, RtlFieldEvent::Change) {
+            let text = state.read(cx).value().to_string();
             this.on_key_point_edited(key, text, cx);
         }
     });
@@ -557,66 +544,32 @@ fn key_point_input(
 
 /// Build the two fields for one quote row plus the subscriptions that write
 /// what is typed back into the analysis.
-/// A single-line field that stays readable when its text is longer than the
-/// row. GPUI cannot wrap or reorder bidi text inside an input, so while the
-/// field is not being edited its text is shown as a wrapped paragraph (see
-/// `rtl_paragraph`); clicking it, or tabbing in, swaps the real input back in.
-fn wrapped_field(
-    state: &Entity<InputState>,
-    id: (&'static str, usize),
-    window: &mut Window,
-    cx: &mut Context<App>,
-) -> AnyElement {
-    let focus = state.read(cx).focus_handle(cx);
-    let logical = rtl(&state.read(cx).value().to_string());
-    if focus.is_focused(window) || logical.chars().count() < 70 {
-        return rtl_input(state).into_any_element();
-    }
-    let state = state.clone();
-    div()
-        .id(id)
-        .w_full()
-        .px_3()
-        .py_2()
-        .text_sm()
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(0xe5e7eb))
-        .cursor_text()
-        .child(rtl_paragraph(&logical))
-        .on_click(move |_, window, cx| {
-            let focus = state.read(cx).focus_handle(cx);
-            window.focus(&focus, cx);
-        })
-        .into_any_element()
-}
-
 fn quote_inputs(
     key: u64,
     speaker: &str,
     quote: &str,
     window: &mut Window,
     cx: &mut Context<App>,
-) -> (Entity<InputState>, Entity<InputState>, Subscription, Subscription) {
+) -> (Entity<RtlField>, Entity<RtlField>, Subscription, Subscription) {
     let speaker_state = cx.new(|cx| {
-        let mut s = InputState::new(window, cx).placeholder(rtl("שם הדובר"));
-        s.set_value(rtl(speaker), window, cx);
+        let mut s = RtlField::new(window, cx).placeholder("שם הדובר");
+        s.set_value(speaker, window, cx);
         s
     });
     let quote_state = cx.new(|cx| {
-        let mut s = InputState::new(window, cx).placeholder(rtl("הציטוט"));
-        s.set_value(rtl(quote), window, cx);
+        let mut s = RtlField::new(window, cx).placeholder("הציטוט");
+        s.set_value(quote, window, cx);
         s
     });
     let speaker_sub = cx.subscribe_in(&speaker_state, window, move |this: &mut App, state, event, _, cx| {
-        if matches!(event, InputEvent::Change) {
-            let speaker = rtl(&state.read(cx).value().to_string());
+        if matches!(event, RtlFieldEvent::Change) {
+            let speaker = state.read(cx).value().to_string();
             this.on_quote_speaker_edited(key, speaker, cx);
         }
     });
     let quote_sub = cx.subscribe_in(&quote_state, window, move |this: &mut App, state, event, _, cx| {
-        if matches!(event, InputEvent::Change) {
-            let quote = rtl(&state.read(cx).value().to_string());
+        if matches!(event, RtlFieldEvent::Change) {
+            let quote = state.read(cx).value().to_string();
             this.on_quote_edited(key, quote, cx);
         }
     });
@@ -679,13 +632,13 @@ impl App {
         if self.editor_loading {
             return div()
                 .p_10()
-                .child(div().text_base().text_color(rgb(0x6b7280)).child(rtl("טוען תמליל…")))
+                .child(div().text_base().text_color(ui::muted()).child(rtl("טוען תמליל…")))
                 .into_any_element();
         }
         let Some(editor) = &self.editor else {
             return div()
                 .p_10()
-                .child(div().text_base().text_color(rgb(0x6b7280)).child(rtl("לא נבחר תמליל.")))
+                .child(div().text_base().text_color(ui::muted()).child(rtl("לא נבחר תמליל.")))
                 .into_any_element();
         };
 
@@ -755,7 +708,7 @@ impl App {
                             .flex_1()
                             .min_w_0()
                             .text_sm()
-                            .children(input.map(|state| rtl_input(&state))),
+                            .children(input),
                     )
                     .child(
                         Button::new(format!("done-{i}"))
@@ -794,12 +747,18 @@ impl App {
                 .flex()
                 .flex_row_reverse()
                 .items_start()
-                .gap_2()
-                .px_2()
-                .py_2()
+                .gap_3()
+                .pr_3()
+                .pl_2()
+                .py_2p5()
                 .rounded_lg()
-                .when(is_active, |this| this.bg(rgb(0xeef2ff)))
-                .when(is_search_match, |this| this.bg(rgb(0xfffbeb)))
+                .border_r_2()
+                .border_color(gpui_kit::transparent_black())
+                .when(is_active, |this| this.bg(ui::accent_bg()).border_color(ui::accent()))
+                .when(is_search_match, |this| this.bg(ui::highlight_bg()))
+                .when(!is_active && !is_search_match && !is_editing, |this| {
+                    this.hover(|s| s.bg(ui::surface_alt()))
+                })
                 .when(is_editing, |this| {
                     // Esc puts the segment back as it was. The field is a
                     // descendant of this row, so the keystroke passes through
@@ -811,34 +770,54 @@ impl App {
                     }))
                 })
                 .child(
-                    Button::new(format!("seek-{i}"))
-                        .ghost()
-                        .compact()
-                        .label(format_clock(start))
-                        .on_click(cx.listener(move |this, _, _, cx| this.seek_to(start, cx))),
+                    div()
+                        .id(("seek", i))
+                        .mt_0p5()
+                        .px_2()
+                        .h_6()
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .rounded_md()
+                        .bg(if is_active { ui::surface() } else { ui::surface_alt() })
+                        .text_xs()
+                        .font_medium()
+                        .text_color(if is_active { ui::accent_strong() } else { ui::muted() })
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(ui::accent_strong()))
+                        .on_click(cx.listener(move |this, _, _, cx| this.seek_to(start, cx)))
+                        .child(format_clock(start)),
                 )
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .v_flex()
-                        .when(speaker_label.is_some(), |this| {
+                        .gap_0p5()
+                        .when(speaker_label.is_some() || seg.proofread, |this| {
                             this.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0x4f46e5))
-                                    .child(rtl(&speaker_label.clone().unwrap_or_default())),
-                            )
-                        })
-                        .when(seg.proofread, |this| {
-                            // Marks a segment DeepSeek corrected, so the parts
-                            // that were edited are visible in place; the full
-                            // before/after is in the "תיקוני הגהה" dialog.
-                            this.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0x059669))
-                                    .child(rtl("תוקן בהגהה")),
+                                ui::rtl_row()
+                                    .gap_2()
+                                    .when(speaker_label.is_some(), |this| {
+                                        this.child(
+                                            div()
+                                                .text_xs()
+                                                .font_semibold()
+                                                .text_color(ui::accent())
+                                                .child(rtl(&speaker_label.clone().unwrap_or_default())),
+                                        )
+                                    })
+                                    .when(seg.proofread, |this| {
+                                        // Marks a segment DeepSeek corrected, so the
+                                        // parts that were edited are visible in place;
+                                        // the full before/after is in the "תיקוני הגהה"
+                                        // dialog.
+                                        this.child(ui::icon_pill(
+                                            Ic::Sparkles,
+                                            "תוקן בהגהה",
+                                            Tone::Success,
+                                        ))
+                                    }),
                             )
                         })
                         .child(body),
@@ -848,7 +827,8 @@ impl App {
                         Button::new(format!("edit-{i}"))
                             .ghost()
                             .compact()
-                            .label(rtl("עריכה"))
+                            .icon(ui::icon(Ic::Pencil, 15.0, ui::muted()))
+                            .tooltip(rtl("עריכה"))
                             .disabled(!editable)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.begin_edit(i, window, cx)
@@ -858,64 +838,92 @@ impl App {
             rows.push(row.into_any_element());
         }
 
+        let meta_line = format!(
+            "{segment_count} מקטעים · {}{}{}",
+            format_clock(duration),
+            if partial { " · תמליל חלקי" } else { "" },
+            if corrections > 0 {
+                format!(" · {corrections} תיקוני הגהה")
+            } else {
+                String::new()
+            }
+        );
+        let hint_text = if editable {
+            "לחיצה על טקסט מדלגת לנקודה בהקלטה · לחיצה כפולה או על העיפרון פותחת את המקטע לתיקון · Enter לסיום, Esc לביטול"
+        } else {
+            "התמלול עדיין רץ; עריכת הטקסט תתאפשר בסיומו."
+        };
+
         div()
             .w_full()
-            .p_6()
+            .p_8()
             .v_flex()
-            .gap_4()
+            .gap_5()
             .when(summary_full_height, |this| this.flex_1())
             // -- header ----------------------------------------------------
             .child(
-                div()
-                    .flex()
-                    .flex_row_reverse()
-                    .items_center()
-                    .justify_between()
+                ui::rtl_row()
                     .gap_3()
                     .child(
-                        div()
-                            .min_w_0()
-                            .v_flex()
-                            .child(div().truncate().text_lg().child(rtl(&truncate_middle(&filename, 60))))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0x6b7280))
-                                    .child(rtl(&format!(
-                                        "{segment_count} מקטעים · {}{}{}",
-                                        format_clock(duration),
-                                        if partial { " · תמליל חלקי" } else { "" },
-                                        if corrections > 0 {
-                                            format!(" · {corrections} תיקוני הגהה")
-                                        } else {
-                                            String::new()
-                                        }
-                                    ))),
-                            ),
+                        Button::new("close-editor")
+                            .secondary()
+                            .compact()
+                            .icon(ui::icon(Ic::ChevronRight, 16.0, ui::subtle()))
+                            .tooltip(rtl("סגירה"))
+                            .on_click(cx.listener(|this, _, _, cx| this.close_editor(cx))),
                     )
                     .child(
                         div()
-                            .flex()
-                            .flex_row_reverse()
+                            .flex_1()
+                            .min_w_0()
+                            .v_flex()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xl()
+                                    .font_bold()
+                                    .text_color(ui::ink())
+                                    .child(rtl(&truncate_middle(&filename, 60))),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(ui::muted())
+                                    .child(rtl(&meta_line)),
+                            ),
+                    ),
+            )
+            .child(
+                ui::rtl_row()
+                    .flex_wrap()
+                    .gap_2()
+                    .justify_between()
+                    .child(
+                        ui::rtl_row()
+                            .flex_wrap()
                             .gap_2()
-                            .child(save_indicator(save_state))
                             .child(
                                 Button::new("undo")
                                     .ghost()
-                                    .label(rtl("ביטול פעולה"))
+                                    .compact()
+                                    .icon(ui::icon(Ic::Undo, 16.0, if can_undo { ui::subtle() } else { ui::faint() }))
+                                    .tooltip(rtl("ביטול פעולה"))
                                     .disabled(!can_undo)
                                     .on_click(cx.listener(|this, _, _, cx| this.undo_edit(cx))),
                             )
                             .child(
                                 Button::new("redo")
                                     .ghost()
-                                    .label(rtl("ביצוע חוזר"))
+                                    .compact()
+                                    .icon(ui::icon(Ic::Redo, 16.0, if can_redo { ui::subtle() } else { ui::faint() }))
+                                    .tooltip(rtl("ביצוע חוזר"))
                                     .disabled(!can_redo)
                                     .on_click(cx.listener(|this, _, _, cx| this.redo_edit(cx))),
                             )
                             .child(
                                 Button::new("proofread")
                                     .secondary()
+                                    .icon(ui::icon(Ic::Sparkles, 15.0, ui::accent()))
                                     .label(rtl(if proofreading {
                                         "מגיה…"
                                     } else {
@@ -937,38 +945,38 @@ impl App {
                                 )
                             })
                             .child(
+                                Button::new("identify-speakers")
+                                    .secondary()
+                                    .icon(ui::icon(Ic::Users, 15.0, ui::accent()))
+                                    .label(rtl("זיהוי דוברים"))
+                                    .disabled(partial)
+                                    .on_click(cx.listener(|this, _, _, cx| this.open_speakers(cx))),
+                            )
+                            .child(
                                 Button::new("copy-all")
                                     .secondary()
+                                    .icon(ui::icon(Ic::Copy, 15.0, ui::subtle()))
                                     .label(rtl("העתק הכול"))
                                     .on_click(cx.listener(|this, _, _, cx| this.copy_all(cx))),
                             )
                             .child(
                                 Button::new("export")
                                     .primary()
+                                    .icon(ui::icon(Ic::FileDown, 15.0, gpui_kit::rgb(0xffffff)))
                                     .label(rtl("ייצוא"))
                                     .on_click(cx.listener(|this, _, _, cx| this.open_export(cx))),
-                            )
-                            .child(
-                                Button::new("close-editor")
-                                    .ghost()
-                                    .label(rtl("סגירה"))
-                                    .on_click(cx.listener(|this, _, _, cx| this.close_editor(cx))),
                             ),
-                    ),
+                    )
+                    .child(save_indicator(save_state)),
             )
             .child(self.analysis_tab_bar(cx))
             .when(show_transcript, |this| {
                 this
             // -- player ----------------------------------------------------
             .child(
-                div()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgb(0xe5e7eb))
-                    .bg(cx.theme().background)
-                    .p_3()
-                    .v_flex()
-                    .gap_2()
+                ui::card()
+                    .p_4()
+                    .gap_3()
                     .child(
                         div()
                             .flex()
@@ -976,34 +984,58 @@ impl App {
                             .items_center()
                             .gap_3()
                             .child(
-                                Button::new("skip-back")
-                                    .ghost()
-                                    .label("−5s")
-                                    .on_click(cx.listener(|this, _, _, cx| this.skip_media(-SKIP_SECONDS, cx))),
-                            )
-                            .child(
                                 Button::new("play")
                                     .primary()
+                                    .icon(ui::icon(
+                                        if playing { Ic::Pause } else { Ic::Play },
+                                        16.0,
+                                        gpui_kit::rgb(0xffffff),
+                                    ))
                                     .label(rtl(if playing { "השהיה" } else { "ניגון" }))
                                     .disabled(!editor.media_ready)
                                     .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx))),
                             )
                             .child(
+                                Button::new("skip-back")
+                                    .ghost()
+                                    .compact()
+                                    .icon(ui::icon(Ic::SkipBack, 15.0, ui::subtle()))
+                                    .label("5s")
+                                    .on_click(cx.listener(|this, _, _, cx| this.skip_media(-SKIP_SECONDS, cx))),
+                            )
+                            .child(
                                 Button::new("skip-fwd")
                                     .ghost()
-                                    .label("+5s")
+                                    .compact()
+                                    .icon(ui::icon(Ic::SkipForward, 15.0, ui::subtle()))
+                                    .label("5s")
                                     .on_click(cx.listener(|this, _, _, cx| this.skip_media(SKIP_SECONDS, cx))),
                             )
                             .child(
                                 div()
+                                    .flex_1()
                                     .text_sm()
-                                    .text_color(rgb(0x6b7280))
-                                    .child(rtl(&format!("{} / {}", format_clock(pos), format_clock(total)))),
+                                    .font_medium()
+                                    .text_color(ui::subtle())
+                                    .child(rtl(&isolate(format!("{} / {}", format_clock(pos), format_clock(total))))),
                             )
+                            .when(!editor.media_ready && media_error.is_none(), |this| {
+                                this.child(
+                                    ui::rtl_row()
+                                        .gap_1p5()
+                                        .text_xs()
+                                        .text_color(ui::muted())
+                                        .child(ui::icon(Ic::Refresh, 13.0, ui::muted()))
+                                        .child(rtl("מכין שמע לניגון…")),
+                                )
+                            })
                             .child(
                                 Button::new("speed")
-                                    .ghost()
+                                    .secondary()
+                                    .compact()
+                                    .icon(ui::icon(Ic::Gauge, 15.0, ui::subtle()))
                                     .label(format!("{speed}×"))
+                                    .tooltip(rtl("מהירות ניגון"))
                                     .on_click(cx.listener(|this, _, _, cx| this.cycle_speed(cx))),
                             ),
                     )
@@ -1016,10 +1048,14 @@ impl App {
                     )
                     .when(media_error.is_some(), |this| {
                         this.child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(0xdc2626))
-                                .child(rtl_paragraph(media_error.clone().unwrap_or_default())),
+                            ui::notice(Ic::CircleAlert, Tone::Danger).child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(ui::danger_text())
+                                    .child(rtl_paragraph(media_error.clone().unwrap_or_default())),
+                            ),
                         )
                     }),
             )
@@ -1027,24 +1063,26 @@ impl App {
             .child(speaker_bar)
             // -- segments --------------------------------------------------
             .child(
-                div()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgb(0xe5e7eb))
-                    .bg(cx.theme().background)
-                    .p_2()
-                    .v_flex()
+                ui::card()
+                    .p_3()
+                    .gap_1()
                     .child(
-                        div()
+                        ui::rtl_row()
+                            .gap_2()
                             .px_2()
-                            .pb_1()
-                            .text_xs()
-                            .text_color(rgb(0x6b7280))
-                            .child(rtl(if editable {
-                                "לחיצה על טקסט מדלגת לנקודה בהקלטה · לחיצה כפולה או \"עריכה\" פותחת את המקטע לתיקון · Enter לסיום, Esc לביטול"
-                            } else {
-                                "התמלול עדיין רץ; עריכת הטקסט תתאפשר בסיומו."
-                            })),
+                            .pb_2()
+                            .items_start()
+                            .border_b_1()
+                            .border_color(ui::divider())
+                            .child(div().pt_0p5().child(ui::icon(Ic::Info, 13.0, ui::faint())))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(ui::muted())
+                                    .child(rtl_paragraph(hint_text)),
+                            ),
                     )
                     .children(rows),
             )
@@ -1082,28 +1120,27 @@ impl App {
         };
         let original = segment.text.clone();
         let snapshot = e.segments.clone();
-        // The field holds visual order; `rtl` is its own inverse, so what
-        // comes back out of it is the logical text again.
-        let visual = rtl(&original);
         let input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx);
-            state.set_value(visual, window, cx);
+            let mut state = RtlField::new(window, cx).multiline(false);
+            state.set_value(&original, window, cx);
             state
         });
+        // Typing starts at once; the field takes focus as soon as it appears.
+        input.update(cx, |field, cx| field.focus(window, cx));
         let subscription = cx.subscribe_in(&input, window, move |this: &mut App, state, event, _, cx| {
             match event {
-                InputEvent::Change => {
-                    let text = rtl(&state.read(cx).value().to_string());
+                RtlFieldEvent::Change => {
+                    let text = state.read(cx).value().to_string();
                     this.on_segment_edited(index, text, cx);
                 }
                 // Enter finishes the segment rather than inserting a line
                 // break: a segment is one line here, and the next one is a
                 // click away.
-                InputEvent::PressEnter { .. } => this.finish_edit(cx),
+                RtlFieldEvent::PressEnter => this.finish_edit(cx),
                 // Clicking elsewhere, or tabbing away, is also "done". The
                 // text is already applied, so this only has to flush it.
-                InputEvent::Blur => this.finish_edit(cx),
-                InputEvent::Focus => {}
+                RtlFieldEvent::Blur => this.finish_edit(cx),
+                RtlFieldEvent::Focus => {}
             }
         });
         if let Some(e) = &mut self.editor {
@@ -1325,6 +1362,8 @@ impl App {
     fn toggle_play(&mut self, cx: &mut Context<Self>) {
         if let Some(e) = &mut self.editor {
             e.player.toggle();
+            // Playing again after the end starts over: show it at once.
+            e.current_time = e.player.position_seconds();
         }
         cx.notify();
     }
@@ -1495,8 +1534,10 @@ impl App {
         let Some(e) = &self.editor else { return };
         let job_id = e.job_id.clone();
         let api = self.api.clone();
-        let url = api.media_url(&job_id);
-        let dest = std::env::temp_dir().join(format!("tiktuv-media-{job_id}.bin"));
+        let url = api.playback_url(&job_id);
+        // A new name: copies of the raw media cached by earlier versions are
+        // not on the transcript's timeline and must not be reused.
+        let dest = std::env::temp_dir().join(format!("tiktuv-playback-{job_id}.wav"));
 
         if dest.is_file() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
             if let Some(e) = &mut self.editor {
@@ -1569,13 +1610,28 @@ impl App {
         for (label, tab) in tabs {
             let active = current == tab;
             buttons.push(
-                Button::new(label)
-                    .ghost()
-                    .selected(active)
-                    .label(rtl(label))
+                div()
+                    .id(label)
+                    .px_3p5()
+                    .h_9()
+                    .flex()
+                    .items_center()
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .text_sm()
+                    .whitespace_nowrap()
+                    .when(active, |this| {
+                        this.bg(ui::accent_bg()).text_color(ui::accent_strong()).font_semibold()
+                    })
+                    .when(!active, |this| {
+                        this.text_color(ui::muted())
+                            .font_medium()
+                            .hover(|s| s.bg(ui::surface_alt()).text_color(ui::ink()))
+                    })
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.set_editor_tab(tab, window, cx)),
                     )
+                    .child(rtl(label))
                     .into_any_element(),
             );
         }
@@ -1584,9 +1640,11 @@ impl App {
             .flex_row_reverse()
             .flex_wrap()
             .gap_1()
-            .border_b_1()
-            .border_color(rgb(0xe5e7eb))
-            .pb_2()
+            .p_1()
+            .rounded_xl()
+            .border_1()
+            .border_color(ui::border())
+            .bg(ui::surface())
             .children(buttons)
     }
 
@@ -2604,15 +2662,16 @@ impl App {
             .map(|a| a.summary.clone())
             .unwrap_or_default();
         let input = cx.new(|cx| {
-            let mut state = TextareaState::new(window, cx)
-                .placeholder(rtl("כתבו תקציר…"))
-                .soft_wrap(false);
-            state.set_value(summary_field_value(&summary), window, cx);
+            let mut state = RtlField::new(window, cx)
+                .placeholder("כתבו תקציר…")
+                .multiline(true)
+                .min_rows(16);
+            state.set_value(&summary, window, cx);
             state
         });
         let sub = cx.subscribe_in(&input, window, move |this: &mut App, state, event, _, cx| {
-            if matches!(event, InputEvent::Change) {
-                let summary = summary_logical_value(&state.read(cx).value().to_string());
+            if matches!(event, RtlFieldEvent::Change) {
+                let summary = state.read(cx).value().to_string();
                 this.on_summary_edited(summary, cx);
             }
         });
@@ -2773,7 +2832,7 @@ impl App {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0x6b7280))
+                    .text_color(ui::muted())
                     .child(rtl_paragraph(
                         "אפשר לערוך את התקציר ישירות בשדה. השינויים נשמרים אוטומטית.",
                     )),
@@ -2788,7 +2847,7 @@ impl App {
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
-                    .child(rtl_textarea(&editor.summary_input)),
+                    .child(editor.summary_input.clone()),
             )
             .into_any_element()
     }
@@ -2816,7 +2875,7 @@ impl App {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x4f46e5))
+                            .text_color(ui::accent())
                             .child(rtl(&speaker)),
                     )
                     .child(
@@ -2825,7 +2884,7 @@ impl App {
                             .flex_row_reverse()
                             .items_center()
                             .gap_2()
-                            .child(div().flex_1().min_w_0().child(rtl_input(&row.summary_input))),
+                            .child(div().flex_1().min_w_0().child(row.summary_input.clone())),
                     )
                     .into_any_element(),
             );
@@ -2854,7 +2913,7 @@ impl App {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0x6b7280))
+                    .text_color(ui::muted())
                     .child(rtl_paragraph(
                         "אפשר לערוך את הסיכום של כל דובר ישירות בשדה. השינויים נשמרים אוטומטית.",
                     )),
@@ -2863,7 +2922,7 @@ impl App {
                 this.child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x6b7280))
+                        .text_color(ui::muted())
                         .child(rtl_paragraph("לא זוהו דוברים בתמליל.")),
                 )
             })
@@ -3144,8 +3203,8 @@ impl App {
                     .items_center()
                     .gap_2()
                     .py_1()
-                    .child(div().flex_1().min_w_0().child(rtl_input(&row.task_input)))
-                    .child(div().w(px(160.)).child(rtl_input(&row.assignee_input)))
+                    .child(div().flex_1().min_w_0().child(row.task_input.clone()))
+                    .child(div().w(px(160.)).child(row.assignee_input.clone()))
                     .child(
                         Button::new(format!("action-remove-{key}"))
                             .ghost()
@@ -3191,7 +3250,7 @@ impl App {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0x6b7280))
+                    .text_color(ui::muted())
                     .child(rtl_paragraph(
                         "אפשר לערוך את המשימה ואת האחראי ישירות בשדות, להוסיף משימה חדשה ולהסיר קיימת. השינויים נשמרים אוטומטית.",
                     )),
@@ -3200,7 +3259,7 @@ impl App {
                 this.child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x6b7280))
+                        .text_color(ui::muted())
                         .child(rtl_paragraph("לא נמצאו משימות או פריטי פעולה.")),
                 )
             })
@@ -3231,7 +3290,7 @@ impl App {
                     .items_center()
                     .gap_2()
                     .py_1()
-                    .child(div().flex_1().min_w_0().child(rtl_input(&row.name_input)))
+                    .child(div().flex_1().min_w_0().child(row.name_input.clone()))
                     .child(
                         Button::new(format!("entity-type-{key}"))
                             .ghost()
@@ -3286,7 +3345,7 @@ impl App {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0x6b7280))
+                    .text_color(ui::muted())
                     .child(rtl_paragraph(
                         "אפשר לשנות שם ישירות בשדה, להחליף סוג בלחיצה על הכפתור, להוסיף ישות חדשה ולהסיר קיימת. השינויים נשמרים אוטומטית.",
                     )),
@@ -3295,7 +3354,7 @@ impl App {
                 this.child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x6b7280))
+                        .text_color(ui::muted())
                         .child(rtl_paragraph("לא נמצאו ישויות בעלות שם.")),
                 )
             })
@@ -3325,7 +3384,7 @@ impl App {
                     .items_center()
                     .gap_2()
                     .py_1()
-                    .child(div().flex_1().min_w_0().child(rtl_input(&row.input)))
+                    .child(div().flex_1().min_w_0().child(row.input.clone()))
                     .child(
                         Button::new(format!("key-point-remove-{key}"))
                             .ghost()
@@ -3371,7 +3430,7 @@ impl App {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0x6b7280))
+                    .text_color(ui::muted())
                     .child(rtl_paragraph(
                         "אפשר לערוך כל נקודה ישירות בשדה, להוסיף נקודה חדשה ולהסיר קיימת. השינויים נשמרים אוטומטית.",
                     )),
@@ -3380,7 +3439,7 @@ impl App {
                 this.child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x6b7280))
+                        .text_color(ui::muted())
                         .child(rtl_paragraph("לא נמצאו נקודות מפתח.")),
                 )
             })
@@ -3417,13 +3476,13 @@ impl App {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(rgb(0x6b7280))
+                                    .text_color(ui::muted())
                                     .child(rtl("דובר:")),
                             )
                             .child(
                                 div()
                                     .w(px(180.))
-                                    .child(rtl_input(&row.speaker_input)),
+                                    .child(row.speaker_input.clone()),
                             )
                             .child(
                                 Button::new(format!("quote-remove-{key}"))
@@ -3435,12 +3494,7 @@ impl App {
                                     })),
                             ),
                     )
-                    .child(div().flex_1().min_w_0().child(wrapped_field(
-                        &row.quote_input,
-                        ("quote-text", index),
-                        window,
-                        cx,
-                    )))
+                    .child(div().flex_1().min_w_0().child(row.quote_input.clone()))
                     .into_any_element(),
             );
         }
@@ -3477,7 +3531,7 @@ impl App {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0x6b7280))
+                    .text_color(ui::muted())
                     .child(rtl_paragraph(
                         "אפשר לערוך את הציטוט ואת שם הדובר ישירות בשדות, להוסיף ציטוט חדש ולהסיר קיים. השינויים נשמרים אוטומטית.",
                     )),
@@ -3486,7 +3540,7 @@ impl App {
                 this.child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x6b7280))
+                        .text_color(ui::muted())
                         .child(rtl_paragraph("לא זוהו דוברים בתמליל.")),
                 )
             })
@@ -3502,7 +3556,7 @@ impl App {
         match editor.analysis_state {
             AnalysisState::Loading => div()
                 .p_8()
-                .child(div().text_base().text_color(rgb(0x6b7280)).child(rtl("מנתח בעזרת DeepSeek…")))
+                .child(div().text_base().text_color(ui::muted()).child(rtl("מנתח בעזרת DeepSeek…")))
                 .into_any_element(),
             AnalysisState::Error => div()
                 .p_8()
@@ -3511,7 +3565,7 @@ impl App {
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0xdc2626))
+                        .text_color(ui::danger())
                         .child(rtl_paragraph(editor.analysis_error.clone().unwrap_or_else(|| "יצירת הניתוח נכשלה.".to_string()))),
                 )
                 .child(
@@ -3554,13 +3608,8 @@ impl App {
                 } else {
                     analysis_section(tab, analysis)
                 };
-                div()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgb(0xe5e7eb))
-                    .bg(cx.theme().background)
+                ui::card()
                     .p_5()
-                    .v_flex()
                     .gap_3()
                     // On the summary tab the card stretches to the bottom of
                     // the page so the field inside can fill it; the other
@@ -3577,7 +3626,7 @@ impl App {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(rgb(0x6b7280))
+                                    .text_color(ui::muted())
                                     .child(rtl(&format!("נוצר בעזרת DeepSeek {}", latin(&analysis.model)))),
                             )
                             .child(
@@ -3630,13 +3679,8 @@ impl App {
         } else {
             format!("{} / {}", active + 1, count)
         };
-        div()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(0xe5e7eb))
-            .bg(cx.theme().background)
-            .p_3()
-            .v_flex()
+        ui::card()
+            .p_3p5()
             .gap_2()
             .child(
                 div()
@@ -3644,10 +3688,11 @@ impl App {
                     .flex_row_reverse()
                     .items_center()
                     .gap_2()
-                    .child(div().flex_1().min_w_0().child(rtl_input(&query)))
+                    .child(div().flex_1().min_w_0().child(query.clone()))
                     .child(
                         Button::new("run-search")
                             .secondary()
+                            .icon(ui::icon(Ic::Search, 15.0, ui::subtle()))
                             .label(rtl("חיפוש"))
                             .on_click(cx.listener(|this, _, _, cx| this.run_search(cx))),
                     )
@@ -3658,18 +3703,20 @@ impl App {
                             .label(rtl("Aa"))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_search_case(cx))),
                     )
-                    .child(div().text_xs().text_color(rgb(0x6b7280)).child(rtl(&position)))
+                    .child(div().text_xs().text_color(ui::muted()).child(rtl(&position)))
                     .child(
                         Button::new("search-prev")
                             .ghost()
-                            .label(rtl("‹"))
+                            .compact()
+                            .icon(ui::icon(Ic::ChevronRight, 15.0, ui::subtle()))
                             .disabled(count == 0)
                             .on_click(cx.listener(|this, _, _, cx| this.step_search(-1, cx))),
                     )
                     .child(
                         Button::new("search-next")
                             .ghost()
-                            .label(rtl("›"))
+                            .compact()
+                            .icon(ui::icon(Ic::ChevronLeft, 15.0, ui::subtle()))
                             .disabled(count == 0)
                             .on_click(cx.listener(|this, _, _, cx| this.step_search(1, cx))),
                     ),
@@ -3680,10 +3727,11 @@ impl App {
                     .flex_row_reverse()
                     .items_center()
                     .gap_2()
-                    .child(div().flex_1().min_w_0().child(rtl_input(&replacement)))
+                    .child(div().flex_1().min_w_0().child(replacement.clone()))
                     .child(
                         Button::new("replace-current")
                             .ghost()
+                            .icon(ui::icon(Ic::Replace, 15.0, ui::subtle()))
                             .label(rtl("החלף"))
                             .disabled(count == 0)
                             .on_click(cx.listener(|this, _, _, cx| this.replace_current(cx))),
@@ -3797,14 +3845,97 @@ impl App {
         self.run_search(cx);
     }
 
-    fn on_speaker_rename(&mut self, key: String, name: String, cx: &mut Context<Self>) {
+    fn on_speaker_rename(
+        &mut self,
+        key: String,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The analysis calls a speaker by what the transcript called them, and
+        // an unnamed one by "דובר N". Work out both ends of the change.
+        let fallback = default_speaker_label(&key);
+        let old = self
+            .editor
+            .as_ref()
+            .and_then(|e| e.speakers.get(&key))
+            .filter(|n| !n.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| fallback.clone());
+        let new = if name.trim().is_empty() { fallback } else { name.trim().to_string() };
         if let Some(e) = &mut self.editor {
             e.speakers.insert(key, name);
+        }
+        if old != new {
+            self.relabel_open_analysis(&old, &new, window, cx);
         }
         cx.notify();
         // Renaming is typing too, so it goes through the same debounce rather
         // than a request per keystroke.
         self.queue_save(cx);
+    }
+
+    /// Rename a speaker in every analysis tab that is open: the summary, key
+    /// points, tasks (text and assignee), speaker summaries and quotes. The
+    /// stored analysis is updated by the backend when the transcript saves; this
+    /// keeps what is on screen in step, field by field.
+    fn relabel_open_analysis(
+        &mut self,
+        old: &str,
+        new: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut updates: Vec<(Entity<RtlField>, String)> = Vec::new();
+        {
+            let Some(e) = &mut self.editor else { return };
+            let Some(a) = &mut e.analysis else { return };
+
+            a.summary = replace_label(&a.summary, old, new);
+            for point in &mut a.key_points {
+                *point = replace_label(point, old, new);
+            }
+            for item in &mut a.speaker_summaries {
+                if item.speaker == old {
+                    item.speaker = new.to_string();
+                }
+                item.summary = replace_label(&item.summary, old, new);
+            }
+            for quote in &mut a.speaker_quotes {
+                if quote.speaker == old {
+                    quote.speaker = new.to_string();
+                }
+            }
+            for item in &mut a.action_items {
+                if item.assignee.as_deref() == Some(old) {
+                    item.assignee = Some(new.to_string());
+                }
+                item.task = replace_label(&item.task, old, new);
+            }
+
+            updates.push((e.summary_input.clone(), a.summary.clone()));
+            for (row, text) in e.key_point_rows.iter().zip(&a.key_points) {
+                updates.push((row.input.clone(), text.clone()));
+            }
+            for (row, item) in e.speaker_summary_rows.iter().zip(&a.speaker_summaries) {
+                updates.push((row.summary_input.clone(), item.summary.clone()));
+            }
+            for (row, item) in e.action_item_rows.iter().zip(&a.action_items) {
+                updates.push((row.task_input.clone(), item.task.clone()));
+                updates.push((
+                    row.assignee_input.clone(),
+                    item.assignee.clone().unwrap_or_default(),
+                ));
+            }
+            for (row, item) in e.quote_rows.iter().zip(&a.speaker_quotes) {
+                updates.push((row.speaker_input.clone(), item.speaker.clone()));
+            }
+        }
+        for (field, text) in updates {
+            if field.read(cx).value() != text {
+                field.update(cx, |field, cx| field.set_value(&text, window, cx));
+            }
+        }
     }
 
     /// Add a speaker that the diarizer did not find. The new key is unused by
@@ -3884,9 +4015,9 @@ impl App {
                     .flex_row_reverse()
                     .items_center()
                     .gap_2()
-                    .child(div().text_xs().text_color(rgb(0x6b7280)).child(rtl("שם דובר:")))
-                    .child(div().w(px(160.)).child(rtl_input(state)))
-                    .child(div().text_xs().text_color(rgb(0x9ca3af)).child(hint))
+                    .child(div().text_xs().text_color(ui::muted()).child(rtl("שם דובר:")))
+                    .child(div().w(px(160.)).child(state.clone()))
+                    .child(div().text_xs().text_color(ui::faint()).child(hint))
                     .child(
                         Button::new(format!("remove-speaker-{key}"))
                             .ghost()
@@ -3900,13 +4031,8 @@ impl App {
             );
         }
         let empty = rows.is_empty();
-        div()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(0xe5e7eb))
-            .bg(cx.theme().background)
-            .p_3()
-            .v_flex()
+        ui::card()
+            .p_3p5()
             .gap_2()
             .child(
                 div()
@@ -3914,8 +4040,22 @@ impl App {
                     .flex_row_reverse()
                     .items_center()
                     .justify_between()
-                    .child(div().text_sm().child(rtl("שמות דוברים")))
+                    .child(ui::section_header(Ic::Users, Tone::Neutral, "שמות דוברים", None))
                     .child(
+                        ui::rtl_row()
+                            .gap_2()
+                            .child(
+                                Button::new("find-speaker-names")
+                                    .secondary()
+                                    .compact()
+                                    .icon(ui::icon(Ic::Sparkles, 15.0, ui::accent()))
+                                    .label(rtl("חפש שמות"))
+                                    .tooltip(rtl("מוצא שמות אמיתיים לדוברים שנאמרו בהקלטה"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.find_speaker_names(window, cx)
+                                    })),
+                            )
+                            .child(
                         Button::new("add-speaker")
                             .secondary()
                             .compact()
@@ -3923,13 +4063,14 @@ impl App {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.add_speaker(window, cx)
                             })),
+                            ),
                     ),
             )
             .when(empty, |this| {
                 this.child(
                     div()
                         .text_xs()
-                        .text_color(rgb(0x6b7280))
+                        .text_color(ui::muted())
                         .child(rtl("לא זוהו דוברים בתמליל.")),
                 )
             })
@@ -4038,7 +4179,7 @@ fn analysis_section(tab: AnalysisTab, a: &TranscriptAnalysis) -> AnyElement {
     if items.is_empty() {
         return div()
             .text_sm()
-            .text_color(rgb(0x6b7280))
+            .text_color(ui::muted())
             .child(rtl_paragraph(empty))
             .into_any_element();
     }
@@ -4056,12 +4197,86 @@ fn analysis_section(tab: AnalysisTab, a: &TranscriptAnalysis) -> AnyElement {
 }
 
 fn save_indicator(state: SaveState) -> impl IntoElement {
-    let (text, color) = match state {
-        SaveState::Pending => ("שינויים לא נשמרו", rgb(0x6b7280)),
-        SaveState::Saving => ("שומר…", rgb(0x6b7280)),
-        SaveState::Saved => ("נשמר", rgb(0x059669)),
-        SaveState::Error => ("השמירה נכשלה", rgb(0xdc2626)),
-        SaveState::Idle => ("", rgb(0x6b7280)),
+    let (text, tone, ic) = match state {
+        SaveState::Pending => ("שינויים לא נשמרו", Tone::Warning, Ic::CircleAlert),
+        SaveState::Saving => ("שומר…", Tone::Neutral, Ic::Refresh),
+        SaveState::Saved => ("נשמר", Tone::Success, Ic::CircleCheck),
+        SaveState::Error => ("השמירה נכשלה", Tone::Danger, Ic::CircleAlert),
+        SaveState::Idle => ("", Tone::Neutral, Ic::Check),
     };
-    div().text_xs().text_color(color).child(rtl(text))
+    let (fg, _) = tone.colors();
+    ui::rtl_row()
+        .gap_1p5()
+        .text_xs()
+        .text_color(fg)
+        .when(!text.is_empty(), |this| {
+            this.child(ui::icon(ic, 13.0, fg)).child(rtl(text))
+        })
+}
+
+/// How the analysis names a speaker nobody has named: "דובר 1".
+fn default_speaker_label(key: &str) -> String {
+    if !key.is_empty() && key.chars().all(|c| c.is_ascii_digit()) {
+        format!("דובר {key}")
+    } else {
+        key.to_string()
+    }
+}
+
+/// Replace a speaker label inside free text, only where it is that label.
+///
+/// "דובר 1" is left alone inside "דובר 12" and inside a word that merely ends
+/// with the same letters, but found behind a Hebrew one-letter prefix
+/// ("לדובר 1" becomes "לדנה"). The backend applies the same rule to the stored
+/// analysis.
+fn replace_label(text: &str, old: &str, new: &str) -> String {
+    const PREFIXES: &str = "ובכלמשה";
+    if old.is_empty() || old == new || !text.contains(old) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (pos, _) in text.match_indices(old) {
+        if pos < last {
+            continue;
+        }
+        let end = pos + old.len();
+        if text[end..].chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let mut before = text[..pos].chars().rev().peekable();
+        let mut skipped = 0;
+        while skipped < 2 && before.peek().is_some_and(|c| PREFIXES.contains(*c)) {
+            before.next();
+            skipped += 1;
+        }
+        if before.peek().is_some_and(|c| c.is_alphanumeric()) {
+            continue;
+        }
+        out.push_str(&text[last..pos]);
+        out.push_str(new);
+        last = end;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_label_itself_is_replaced() {
+        let text = "דובר 1 שאל את דובר 12 ואז לדובר 1 ענו, לא בגדובר 1";
+        assert_eq!(
+            replace_label(text, "דובר 1", "דנה"),
+            "דנה שאל את דובר 12 ואז לדנה ענו, לא בגדובר 1"
+        );
+    }
+
+    #[test]
+    fn unnamed_speakers_are_numbered() {
+        assert_eq!(default_speaker_label("2"), "דובר 2");
+        assert_eq!(default_speaker_label("SPEAKER_00"), "SPEAKER_00");
+    }
 }

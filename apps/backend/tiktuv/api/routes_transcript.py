@@ -13,8 +13,10 @@ from fastapi.responses import StreamingResponse
 
 from ..errors import ErrorCode, TiktuvError
 from ..logging_conf import get_logger
+from ..media.playback import ensure_playback_copy
 from ..schemas import Transcript, UpdateSegmentsRequest
 from ..security import is_within
+from ..speakers import label_changes, relabel_analysis
 from .deps import AuthDep, StateDep, get_state, require_token
 
 log = get_logger("api.transcript")
@@ -80,6 +82,14 @@ def update_transcript(
         }
     )
     state.transcripts.save(updated)
+    # A renamed speaker is renamed everywhere: the AI analysis was written with
+    # the old labels and has to follow, or its tabs would still say "דובר 1".
+    if payload.speakers is not None:
+        renames = label_changes(existing.speakers, payload.speakers)
+        if renames:
+            analysis = state.transcripts.load_analysis(job_id)
+            if analysis is not None:
+                state.transcripts.save_analysis(relabel_analysis(analysis, renames))
     state.jobs.touch_opened(job_id)
     log.info("transcript saved", extra={"job_id": job_id, "segments": len(segments)})
     return updated
@@ -112,15 +122,7 @@ def stream_media(
     state = get_state(request)
     # Browsers cannot set headers on <video src>; the token rides as a query
     # parameter here and is validated explicitly.
-    token = request.query_params.get("token")
-    if token:
-        require_token(request, authorization=f"Bearer {token}", x_tiktuv_token=None)
-    else:
-        require_token(
-            request,
-            authorization=request.headers.get("authorization"),
-            x_tiktuv_token=request.headers.get("x-tiktuv-token"),
-        )
+    _authorise_media_request(request)
 
     job = state.jobs.get(job_id)
     path = Path(job.media.path if job.media else "")
@@ -134,8 +136,60 @@ def stream_media(
         raise TiktuvError("media path is outside the managed directory",
                           code=ErrorCode.PATH_NOT_ALLOWED)
 
-    size = resolved.stat().st_size
     media_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+    return _ranged_response(resolved, range_header, media_type)
+
+
+def _authorise_media_request(request: Request) -> None:
+    """Players cannot set headers, so the token may ride as a query parameter."""
+    token = request.query_params.get("token")
+    if token:
+        require_token(request, authorization=f"Bearer {token}", x_tiktuv_token=None)
+    else:
+        require_token(
+            request,
+            authorization=request.headers.get("authorization"),
+            x_tiktuv_token=request.headers.get("x-tiktuv-token"),
+        )
+
+
+@router.get("/{job_id}/playback")
+def stream_playback(
+    job_id: str,
+    request: Request,
+    range_header: Annotated[str | None, Header(alias="range")] = None,
+) -> StreamingResponse:
+    """Serve the recording as audio on the transcript's own timeline.
+
+    The editor plays this instead of the raw media, so the highlighted line and
+    the sound cannot drift apart whatever container or codec the recording is
+    in (see :mod:`tiktuv.media.playback`). Built on first use.
+    """
+    state = get_state(request)
+    _authorise_media_request(request)
+
+    job = state.jobs.get(job_id)
+    source = Path(job.media.path if job.media else "")
+    if not source.is_file():
+        source = state.jobs.get_working_path(job_id)
+    if not source.is_file():
+        raise TiktuvError("media file is missing", code=ErrorCode.MEDIA_CORRUPT)
+    if not is_within(source, state.settings.media_dir):
+        raise TiktuvError(
+            "media path is outside the managed directory", code=ErrorCode.PATH_NOT_ALLOWED
+        )
+
+    copy = ensure_playback_copy(
+        state.require_tools(), source, state.settings.temp_dir, job_id
+    )
+    return _ranged_response(copy, range_header, "audio/wav")
+
+
+def _ranged_response(
+    resolved: Path, range_header: str | None, media_type: str
+) -> StreamingResponse:
+    """Stream a file with HTTP range support."""
+    size = resolved.stat().st_size
 
     start, end = 0, size - 1
     status = 200
